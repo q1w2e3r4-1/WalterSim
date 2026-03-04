@@ -248,8 +248,9 @@ def unmodified(oid,VTS):
       return True
    else:
       for his in History[oid]:
-         seq=his[1][1]
-         if VTS[siteID]<seq:
+         his_ID,seq=his[1] # update中的<siteId(注意不一定是本机id), seqno>
+         if VTS[his_ID]<seq:
+            print("对象被修改过，当前VTS:",VTS,"在此之后的修改记录：",his)
             return False
       return True
 
