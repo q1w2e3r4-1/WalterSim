@@ -376,8 +376,10 @@ def commiTx(x):
    #获得写集合
    x['writeset'] = {}
    for update in x['updates']:
-      if update[0] in ['WRITE','SET_ADD','SET_DEL']:
+      if update[0] in ['WRITE'] : # no 'SET_ADD' and 'SET_DEL'
+         # The write-set of a transaction consists of all oids to which the transaction writes; it excludes updates to set objects
          x['writeset'][update[1]]=update
+         
    #如果所有要写的都是本地的
    print("[3.1] ---------获得写集合---------")
    print(x['writeset'])
