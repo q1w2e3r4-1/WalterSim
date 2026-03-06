@@ -181,8 +181,8 @@
         data:{
             site00:{},
             site01:{},
-            //定时
-            timer:null,
+            //定时器id
+            autoTimer:null,
             //AliceT2的执行延时
             AliceT2Delay:1000,
             //Alice的事务T1
@@ -210,30 +210,46 @@
         methods:{
             //刷新site00
             flushsite00:function(){
-                var vm=this;
-                axios.get('http://127.0.0.1:5000/flush')
-                     .then(function(res){
-                        vm.site00=res.data
-                        //暂停一段时间后联合更新
-                        clearTimeout(this.timer);  
-                        this.timer = setTimeout(()=>{   
-                            vm.flushsite01()
-                        },500);
-                     })
-                     .catch(function(erroe){
-                        console.log("请求API失败")
-                     })
-                },
-                flushsite01:function(){
-                var vm=this;
-                axios.get('http://127.0.0.1:5001/flush')
-                     .then(function(res){
-                        vm.site01=res.data
-                     })
-                     .catch(function(erroe){
-                        console.log("请求API失败")
-                     })
-                },
+                    var vm=this;
+                    axios.get('http://127.0.0.1:5000/flush')
+                        .then(function(res){
+                            vm.site00=res.data
+                        })
+                        .catch(function(erroe){
+                            console.log("请求API失败")
+                        })
+            },
+
+            //刷新site01
+            flushsite01:function(){
+                    var vm=this;
+                    axios.get('http://127.0.0.1:5001/flush')
+                        .then(function(res){
+                            vm.site01=res.data
+                        })
+                        .catch(function(erroe){
+                            console.log("请求API失败")
+                        })
+            },
+
+            //启动自动刷新
+            startAutoFlush:function(){
+                    var vm=this;
+                    //先清除旧定时器
+                    if(vm.autoTimer) clearInterval(vm.autoTimer);
+                    vm.autoTimer = setInterval(function(){
+                        vm.flushsite00();
+                        vm.flushsite01();
+                    },1000);
+            },
+
+            //停止自动刷新
+            stopAutoFlush:function(){
+                    var vm=this;
+                    if(vm.autoTimer) clearInterval(vm.autoTimer);
+                    vm.autoTimer=null;
+            },
+
             //上传事务AliceT1
             TransAliceT1:function(){
                 var vm=this;
@@ -291,6 +307,13 @@
                         console.log("请求API失败")
                      })
                 },
+        },
+        //生命周期钩子
+        created:function(){
+            this.startAutoFlush();
+        },
+        beforeDestroy:function(){
+            this.stopAutoFlush();
         }
     })
 </script>

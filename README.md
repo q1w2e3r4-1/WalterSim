@@ -46,3 +46,9 @@ python server01.py
 A相当于fast commit
 B相当于slow commit
 C和D不知何意味，首先他这个延时是html延时发送（而非不同site之间的延时），其次cset都不在writeset中，哪里来的冲突
+
+#### TODO:
+1. 添加更多demo事务，至少要把所有可能情况都覆盖到
+
+2. 实验部分的复现，可以复用server00的逻辑，去掉一堆debug信息。
+（要模拟出地域分布特征，通信延时较大）
