@@ -1,23 +1,22 @@
 ### WalterSim
 
-> 使用Flask和Vue模拟出Walter系统的情况
+> Implementing Walter系统 using Flask & Vue
 >
-> 论文 《Transactional storage for geo-replicated systems》
+> From paper 《Transactional storage for geo-replicated systems》
 
 #### 后端演示图片
 ![](./imgs/site2.png)
 #### 前端演示图片
 ![](./imgs/client2.png)
 
-#### 运行:rocket:
-##### 1. 启动后端
+#### How to run this project
+##### 1. start backend service
 ```cmd
 cd .\backEnd\
-python server00.py
-python server01.py
+
 ```
-##### 2. 启动前端
-浏览器中打开
+##### 2. start frontend Interface
+Open `.html` file from `frontend` folder in the web browser.
 
 
 #### 模拟说明 :partly_sunny:

@@ -1,0 +1,23 @@
+# ═══════════════════════════════════════════════════════════════════
+#  用户/容器对象配置 (user.yaml)
+#  定义 Walter 系统中所有对象容器的首选站点和副本集
+# ═══════════════════════════════════════════════════════════════════
+
+# 容器列表
+# 每个容器指定：
+#   - id:             容器/对象的唯一标识
+#   - preferred_site: 首选站点 ID（该对象最常被修改的站点）
+#   - replica_sites:  副本站点 ID 列表（包含 preferred_site）
+
+containers:
+  - id: "ssA01"
+    preferred_site: 0
+    replica_sites: [0, 1]
+
+  - id: "ssB01"
+    preferred_site: 1
+    replica_sites: [0, 1]
+
+  - id: "flEve"
+    preferred_site: 1
+    replica_sites: [0, 1]
