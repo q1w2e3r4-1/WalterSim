@@ -4,7 +4,7 @@ This folder contains a staged implementation scaffold for a simplified Walter-st
 geo-replicated transactional KV system.
 
 Current status:
-- Minimal inter-process RPC loop is implemented in `walter_comm.py` and `launcher.py`.
+- Minimal inter-process RPC loop is implemented in `network/rpc.py`, `site/node.py`, and `site/cluster.py`.
 - The remaining modules are intentionally scaffolded with TODO comments so progress
   can be tracked and resumed quickly.
 
@@ -16,3 +16,17 @@ Planned package layout:
 - `experiments/`: workloads, metrics, and experiment runners.
 - `scripts/`: convenience CLIs for local runs.
 - `tests/`: unit/integration test placeholders.
+
+## Run Demo
+
+From workspace root:
+
+```bash
+python WalterSim/lab/scripts/run_cluster.py
+```
+
+Or inside `WalterSim/lab`:
+
+```bash
+python scripts/run_cluster.py
+```
