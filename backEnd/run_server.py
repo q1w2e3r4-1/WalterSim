@@ -19,6 +19,7 @@ import argparse
 import os
 import sys
 import multiprocessing
+from flask_cors import CORS
 import yaml
 
 # 确保项目根目录在 sys.path 中，便于 import
@@ -223,6 +224,7 @@ def start_server(site_id: int,
     db_server = Server(total_server_num=total_sites, config_client=client)
     backend = Backend(name)
     app = backend.create_app(host, port, name, db_server)
+    CORS(app, support_credentials=True)  # 允许跨域请求，支持携带 Cookie
     app.run(host, port, debug=debug, use_reloader=False)
 
     print("\n[INFO] 配置加载完成。服务器逻辑待完善后可在此处启动 Flask app。")

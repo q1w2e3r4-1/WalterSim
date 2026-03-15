@@ -14,6 +14,7 @@ class Transaction:
         self.tid = str(uuid.uuid4())     # 生成一个随机id
         self.startVTS = committedVTS[:]  # 开始时候的时间向量
         self.status = Status.ACTIVE
+        return self
 
     def __str__(self):
         return (
