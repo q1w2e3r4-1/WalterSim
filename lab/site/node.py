@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
 
-from core.config import SITE_IDS, SITE_NAMES, get_link_delay_seconds, get_site_address
-from core.types_store import SiteClock, Transaction, VersionedObjectStore
+from core.config import SITE_IDS, SITE_NAMES, get_link_delay_seconds, get_preferred_site, get_site_address
+from core.types_store import SiteClock, Transaction, VectorTimestamp, Version, VersionedObjectStore
 from network.rpc import MessageTypes, RpcClient, RpcServer
 
 
@@ -26,6 +26,8 @@ class WalterSiteRuntime:
         self.clock = SiteClock(site_id=site_id)
         self.store = VersionedObjectStore()
         self.active_txs: Dict[int, Transaction] = {}
+        self.prepared_writes: Dict[str, List[Dict[str, Any]]] = {}
+        self.key_locks: Dict[str, str] = {}
         self._next_tid = 1
         self._state_lock = threading.Lock()
         self.rpc_server = RpcServer(
@@ -43,6 +45,182 @@ class WalterSiteRuntime:
 
     def stop(self) -> None:
         self.rpc_server.stop()
+
+    def _release_locks(self, txid: str) -> None:
+        locked_oids = [oid for oid, owner in self.key_locks.items() if owner == txid]
+        for oid in locked_oids:
+            self.key_locks.pop(oid, None)
+
+    def _prepare_local_writes(self, txid: str, start_vts: Dict[int, int], writes: List[Dict[str, Any]]) -> tuple[bool, str]:
+        if not writes:
+            return True, ""
+
+        for item in writes:
+            oid = item["oid"]
+            owner = self.key_locks.get(oid)
+            if owner is not None and owner != txid:
+                return False, f"locked_by={owner}"
+
+        normalized_vts = {int(k): int(v) for k, v in start_vts.items()}
+        start_snapshot = VectorTimestamp(clocks=normalized_vts)
+        for item in writes:
+            oid = item["oid"]
+            if self.store.was_modified_since(oid=oid, start_vts=start_snapshot):
+                return False, f"write_conflict_on={oid}"
+
+        for item in writes:
+            self.key_locks[item["oid"]] = txid
+
+        self.prepared_writes[txid] = list(writes)
+        return True, ""
+
+    def _apply_prepared_commit(self, txid: str) -> Dict[str, Any]:
+        writes = self.prepared_writes.pop(txid, [])
+        commit_version = self.clock.next_version()
+        for item in writes:
+            self.store.put(oid=item["oid"], value=item["value"], version=commit_version)
+        self._release_locks(txid)
+        return {"site_id": self.site_id, "seq_no": commit_version.seq_no, "write_count": len(writes)}
+
+    def _abort_prepared(self, txid: str) -> None:
+        self.prepared_writes.pop(txid, None)
+        self._release_locks(txid)
+
+    def _commit_fast(self, tx: Transaction) -> Dict[str, Any]:
+        write_oids = {op.oid for op in tx.updates if op.op_type == "WRITE"}
+        for oid in write_oids:
+            owner = self.key_locks.get(oid)
+            if owner is not None:
+                tx.status = "ABORTED"
+                return {
+                    "ok": False,
+                    "type": MessageTypes.TX_COMMIT_ABORT,
+                    "tid": tx.tid,
+                    "reason": f"locked_key={oid}",
+                }
+            if self.store.was_modified_since(oid=oid, start_vts=tx.start_vts):
+                tx.status = "ABORTED"
+                return {
+                    "ok": False,
+                    "type": MessageTypes.TX_COMMIT_ABORT,
+                    "tid": tx.tid,
+                    "reason": f"write_conflict_on={oid}",
+                }
+
+        tx.status = "COMMITTING"
+        commit_version = self.clock.next_version()
+        for op in tx.updates:
+            if op.op_type == "WRITE":
+                self.store.put(oid=op.oid, value=op.payload, version=commit_version)
+        tx.commit_version = commit_version
+        tx.status = "COMMITTED"
+
+        return {
+            "ok": True,
+            "type": MessageTypes.TX_COMMIT_OK,
+            "tid": tx.tid,
+            "commit_version": commit_version.to_dict(),
+            "write_count": len(tx.updates),
+            "commit_mode": "FAST",
+        }
+
+    def _commit_slow_2pc(self, tx: Transaction) -> Dict[str, Any]:
+        txid = f"{self.site_id}:{tx.tid}"
+        start_vts_dict = tx.start_vts.to_dict()
+        writes_by_site: Dict[int, List[Dict[str, Any]]] = {}
+        for op in tx.updates:
+            if op.op_type != "WRITE":
+                continue
+            preferred = get_preferred_site(op.oid, default_site_id=self.site_id)
+            writes_by_site.setdefault(preferred, []).append({"oid": op.oid, "value": op.payload})
+
+        participant_sites = sorted(writes_by_site.keys())
+        prepared_remote_sites: List[int] = []
+
+        with self._state_lock:
+            local_writes = writes_by_site.get(self.site_id, [])
+            ok, reason = self._prepare_local_writes(txid=txid, start_vts=start_vts_dict, writes=local_writes)
+            if not ok:
+                tx.status = "ABORTED"
+                return {
+                    "ok": False,
+                    "type": MessageTypes.TX_COMMIT_ABORT,
+                    "tid": tx.tid,
+                    "reason": reason,
+                    "commit_mode": "SLOW_2PC",
+                }
+
+        for site_id in participant_sites:
+            if site_id == self.site_id:
+                continue
+            payload = {
+                "type": MessageTypes.TX_PREPARE,
+                "txid": txid,
+                "coordinator_site": self.site_id,
+                "start_vts": start_vts_dict,
+                "writes": writes_by_site.get(site_id, []),
+            }
+            try:
+                resp = self.rpc_client.send_request(
+                    to_site=site_id,
+                    message=payload,
+                    from_site=self.site_id,
+                    apply_delay=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                resp = {"ok": False, "error": f"prepare_rpc_error={exc}"}
+
+            if not resp.get("ok"):
+                for prepared_site in prepared_remote_sites:
+                    try:
+                        self.rpc_client.send_request(
+                            to_site=prepared_site,
+                            message={"type": MessageTypes.TX_REMOTE_ABORT, "txid": txid},
+                            from_site=self.site_id,
+                            apply_delay=True,
+                        )
+                    except Exception:
+                        pass
+                with self._state_lock:
+                    self._abort_prepared(txid)
+                    tx.status = "ABORTED"
+                return {
+                    "ok": False,
+                    "type": MessageTypes.TX_COMMIT_ABORT,
+                    "tid": tx.tid,
+                    "reason": resp.get("reason", resp.get("error", "prepare_rejected")),
+                    "commit_mode": "SLOW_2PC",
+                }
+
+            prepared_remote_sites.append(site_id)
+
+        with self._state_lock:
+            local_commit = self._apply_prepared_commit(txid)
+            tx.status = "COMMITTED"
+            tx.commit_version = Version(site_id=self.site_id, seq_no=int(local_commit["seq_no"]))
+
+        remote_commit_errors: List[str] = []
+        for site_id in prepared_remote_sites:
+            try:
+                self.rpc_client.send_request(
+                    to_site=site_id,
+                    message={"type": MessageTypes.TX_REMOTE_COMMIT, "txid": txid},
+                    from_site=self.site_id,
+                    apply_delay=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                remote_commit_errors.append(f"site={site_id}: {exc}")
+
+        return {
+            "ok": True,
+            "type": MessageTypes.TX_COMMIT_OK,
+            "tid": tx.tid,
+            "write_count": len(tx.updates),
+            "commit_mode": "SLOW_2PC",
+            "participants": participant_sites,
+            "local_commit": local_commit,
+            "remote_commit_errors": remote_commit_errors,
+        }
 
     def _handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         msg_type = request.get("type")
@@ -89,40 +267,50 @@ class WalterSiteRuntime:
                 return {"ok": False, "error": "tid must be int"}
 
             with self._state_lock:
-                tx = self.active_txs.get(tid)
+                tx = self.active_txs.pop(tid, None)
                 if tx is None:
                     return {"ok": False, "error": f"unknown tid={tid}"}
 
-                # First fast-commit guard: abort if any written key changed
-                # since transaction start snapshot.
-                write_oids = {op.oid for op in tx.updates if op.op_type == "WRITE"}
-                for oid in write_oids:
-                    if self.store.was_modified_since(oid=oid, start_vts=tx.start_vts):
-                        tx.status = "ABORTED"
-                        self.active_txs.pop(tid, None)
-                        return {
-                            "ok": False,
-                            "type": MessageTypes.TX_COMMIT_ABORT,
-                            "tid": tid,
-                            "reason": f"write_conflict_on={oid}",
-                        }
+            write_oids = {op.oid for op in tx.updates if op.op_type == "WRITE"}
+            touched_sites = {get_preferred_site(oid, default_site_id=self.site_id) for oid in write_oids}
+            if touched_sites.issubset({self.site_id}):
+                with self._state_lock:
+                    return self._commit_fast(tx)
+            return self._commit_slow_2pc(tx)
 
-                tx.status = "COMMITTING"
-                commit_version = self.clock.next_version()
-                for op in tx.updates:
-                    if op.op_type == "WRITE":
-                        self.store.put(oid=op.oid, value=op.payload, version=commit_version)
-                tx.commit_version = commit_version
-                tx.status = "COMMITTED"
-                self.active_txs.pop(tid, None)
+        if msg_type == MessageTypes.TX_PREPARE:
+            txid = request.get("txid")
+            start_vts = request.get("start_vts")
+            writes = request.get("writes")
+            if not isinstance(txid, str):
+                return {"ok": False, "type": MessageTypes.TX_PREPARE_NO, "reason": "txid must be str"}
+            if not isinstance(start_vts, dict):
+                return {"ok": False, "type": MessageTypes.TX_PREPARE_NO, "reason": "start_vts must be dict"}
+            if not isinstance(writes, list):
+                return {"ok": False, "type": MessageTypes.TX_PREPARE_NO, "reason": "writes must be list"}
 
-            return {
-                "ok": True,
-                "type": MessageTypes.TX_COMMIT_OK,
-                "tid": tid,
-                "commit_version": commit_version.to_dict(),
-                "write_count": len(tx.updates),
-            }
+            with self._state_lock:
+                ok, reason = self._prepare_local_writes(txid=txid, start_vts=start_vts, writes=writes)
+                if not ok:
+                    return {"ok": False, "type": MessageTypes.TX_PREPARE_NO, "reason": reason}
+
+            return {"ok": True, "type": MessageTypes.TX_PREPARE_OK, "txid": txid, "site_id": self.site_id}
+
+        if msg_type == MessageTypes.TX_REMOTE_COMMIT:
+            txid = request.get("txid")
+            if not isinstance(txid, str):
+                return {"ok": False, "error": "txid must be str"}
+            with self._state_lock:
+                info = self._apply_prepared_commit(txid)
+            return {"ok": True, "type": MessageTypes.TX_COMMIT_OK, "txid": txid, "site_commit": info}
+
+        if msg_type == MessageTypes.TX_REMOTE_ABORT:
+            txid = request.get("txid")
+            if not isinstance(txid, str):
+                return {"ok": False, "error": "txid must be str"}
+            with self._state_lock:
+                self._abort_prepared(txid)
+            return {"ok": True, "type": MessageTypes.TX_COMMIT_ABORT, "txid": txid}
 
         if msg_type == MessageTypes.TX_READ:
             tid = request.get("tid")

@@ -42,3 +42,9 @@ Fast-commit conflict smoke test:
 ```bash
 python WalterSim/lab/scripts/run_fast_commit_conflict_smoke.py
 ```
+
+Slow-commit (2PC) smoke test:
+
+```bash
+python WalterSim/lab/scripts/run_slow_commit_smoke.py
+```

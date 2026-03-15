@@ -10,6 +10,13 @@ SITE_IDS = [0, 1, 2, 3]
 SITE_NAMES = {0: "VA", 1: "CA", 2: "IE", 3: "SG"}
 SITE_PORTS = {0: 5001, 1: 5002, 2: 5003, 3: 5004}
 
+# Optional explicit preferred-site mapping for named objects.
+PREFERRED_SITES = {
+	"user_va_profile": 0,
+	"user_sg_profile": 3,
+	"global_timeline": 0,
+}
+
 # RTT values from the paper experiment setup (seconds).
 LATENCY_MATRIX_RTT = {
 	0: [0.000, 0.082, 0.087, 0.261],
@@ -32,4 +39,27 @@ def get_site_address(site_id: int) -> SiteAddress:
 
 def get_link_delay_seconds(from_site: int, to_site: int) -> float:
 	return LATENCY_MATRIX_RTT[from_site][to_site]
+
+
+def get_preferred_site(oid: str, default_site_id: int = 0) -> int:
+	"""Return preferred site for an object id.
+
+	Rules:
+	- If oid is listed in `PREFERRED_SITES`, use that mapping.
+	- If oid starts with `ps<site_id>:` (for smoke tests), use that site id.
+	- Otherwise, fallback to `default_site_id`.
+	"""
+
+	if oid in PREFERRED_SITES:
+		return PREFERRED_SITES[oid]
+
+	if oid.startswith("ps") and ":" in oid:
+		prefix = oid.split(":", 1)[0]
+		candidate = prefix[2:]
+		if candidate.isdigit():
+			site_id = int(candidate)
+			if site_id in SITE_IDS:
+				return site_id
+
+	return default_site_id
 
