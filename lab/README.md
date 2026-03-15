@@ -30,3 +30,15 @@ Or inside `WalterSim/lab`:
 ```bash
 python scripts/run_cluster.py
 ```
+
+Minimal transaction smoke test:
+
+```bash
+python WalterSim/lab/scripts/run_tx_smoke.py
+```
+
+Fast-commit conflict smoke test:
+
+```bash
+python WalterSim/lab/scripts/run_fast_commit_conflict_smoke.py
+```
