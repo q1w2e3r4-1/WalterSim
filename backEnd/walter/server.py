@@ -1,46 +1,51 @@
 # walter server implementation
 
 
+import json
+import threading
+import requests
+from backEnd.walter.configuration import ConfigurationClient
 from backEnd.walter.transaction import Transaction
 
 
 class Server:
-    def __init__(self, total_server_num):
+    def __init__(self, total_server_num, config_client: ConfigurationClient):
         self.currentSeqNo = 0     # 当前的序列编号
         self.committedVTS = [0] * total_server_num  # 已提交的版本时间戳
         self.gotVTS = [0] * total_server_num  # 已获得的版本时间戳
-        self.history = {}  # 历史记录
-
+        self.history = {}  # 历史记录 结构：# oid： [[ ['WRITE', oid,     data],        <site,seqno>],]
+        self.config_client = config_client
+        self.thread_lock = threading.Lock()  # 用于快提交的锁
     #-------------------------执行事务-----------------#
-    def starTx(self):
+    def starTx(self) -> Transaction:
         return Transaction().create(self.committedVTS)
 
     #写一个对象
-    def write(self, x, oid, data):
-        x['updates'].append(['WRITE', oid, data])
+    def write(self, x: Transaction, oid, data):
+        x.add_update(['WRITE', oid, data])
         return None
 
     #集合加
-    def setAdd(self, x, setid, id):
-        x['updates'].append(['SET_ADD', setid, id])
+    def setAdd(self, x: Transaction, setid, id):
+        x.add_update(['SET_ADD', setid, id])
         return None
 
     #集合减
-    def setDel(self, x, setid, id):
-        x['updates'].append(['SET_DEL', setid, id])
+    def setDel(self, x: Transaction, setid, id):
+        x.add_update(['SET_DEL', setid, id])
         return None
 
     #读取一个对象
-    def read(self, x, oid):
-        if is_oid_locally_replicated(oid):
+    def read(self, x: Transaction, oid):
+        if self.config_client.is_locally_preferred(oid):
             # 本地复制的
             # 1.返回x中反应oid的
             states = []
-            for s in x['updates']:
+            for s in x.updates:
                 if s[1] == oid:
                     states.append(s)
             # 2. 返回历史中最新的提交
-            hiss=history_VTS_visible(oid,x['startVTS'])
+            hiss=self.history_VTS_visible(oid,x.startVTS)
 
             # 对于常规对象 walter 返回x.updates中的最新提交
             # 如果没有 返回 history中最后一次提交
@@ -50,16 +55,15 @@ class Server:
             # 非本地复制的
             # 1.返回x中反应oid的
             states = []
-            for s in x['updates']:
+            for s in x.updates:
                 if s[1] == oid:
                     states.append(s)
             # 2. 返回历史中最新的提交
-            hiss=history_VTS_visible(oid,x['startVTS'])
+            hiss=self.history_VTS_visible(oid,x.startVTS)
             # 3. 返回其主站点中的历史
-            prefID=get_oid_preferred_sites_id(oid)
-            siteUrl=servers[prefID][3]
+            siteUrl=self.config_client.get_preferred_site_url(oid)
             # 远程请求
-            res=requests.post(siteUrl+"/history",json={"oid":oid,"VTS":x['startVTS']})
+            res=requests.post(siteUrl+"/history",json={"oid":oid,"VTS":x.startVTS})
             site_hiss=json.loads(res.text).get('data')
 
             # 对于常规对象 walter 返回x.updates中的最新提交
@@ -73,21 +77,19 @@ class Server:
             return data
 
     # 集合读
-    def setRead(self,x,setid):
+    def setRead(self,x: Transaction,setid):
         # 1.返回x中反应oid的
         states = []
-        for s in x['updates']:
+        for s in x.updates:
             if s[1] == setid:
                 states.append(s)
         # 2. 返回历史中最新的提交
-        hiss=history_VTS_visible(setid,x['startVTS'])
-
+        hiss=self.history_VTS_visible(setid,x.startVTS)
         # 3 非本站点 请求返回
-        if is_oid_locally_replicated(setid):
-            prefID=get_oid_preferred_sites_id(setid)
-            siteUrl=servers[prefID][3]
+        if not self.config_client.is_locally_preferred(setid):
+            siteUrl=self.config_client.get_preferred_site_url(setid)
             # 远程请求
-            res=requests.post(siteUrl+"/history",json={"oid":setid,"VTS":x['startVTS']})
+            res=requests.post(siteUrl+"/history",json={"oid":setid,"VTS":x.startVTS})
             site_hiss=json.loads(res.text).get('data')
             hiss+=site_hiss
         
@@ -118,10 +120,10 @@ class Server:
     #-----------------------事务提交---------------------------
     def unmodified(self, oid, VTS):
         '''对象没被修改过'''
-        if oid not in History.keys():
+        if oid not in self.history.keys():
             return True
         else:
-            for his in History[oid]:
+            for his in self.history[oid]:
                 his_ID,seq=his[1] # update中的<siteId(注意不一定是本机id), seqno>
                 if VTS[his_ID]<seq:
                     print("对象被修改过，当前VTS:",VTS,"在此之后的修改记录：",his)
@@ -132,20 +134,20 @@ class Server:
         ''' 更新'''
         for update in updates:
             oid=update[1]
-            if oid not in History.keys():
-                History[oid]=[]
-            History[oid].append([update,version])
+            if oid not in self.history.keys():
+                self.history[oid]=[]
+            self.history[oid].append([update,version])
 
-    def fastCommit(self, x):
+    def fastCommit(self, x: Transaction):
         ''' 快提交  '''
         print("\n  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[线程] 快提交━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓")
         print("  ┃ ",x)
         global currentSeqNo
 
         #加锁
-        ThreadLock.acquire()
+        self.thread_lock.acquire()
         for oid in x['writeset'].keys():
-            if unmodified(oid, x['startVTS']) and oid not in object_locks.keys():
+            if self.unmodified(oid, x['startVTS']) and oid not in object_locks.keys():
                 continue
             else:
                 # 解锁
@@ -244,7 +246,7 @@ class Server:
             x['outcome'] = "ABORTED"
             return x['outcome']
 
-    def commiTx(self, x):
+    def commitTx(self, x: Transaction):
         ''' 提交事务'''
         #获得写集合
         x['writeset'] = {}
@@ -307,3 +309,24 @@ class Server:
         print("| ♢事务现在 是 globally visible")
         x['mark'] = "globally visible"
         print("╰─────────────────────────────────────────────────────────────────────────────────────╯")
+
+    #-------------------------history处理--------------------------#
+    def history_VTS_visible(self, oid, VTS):
+        '''返回oid的历史中，VTS可见的记录'''
+        hiss=[]
+        if oid in self.history.keys():
+            for his in self.history[oid]:
+                siteId,seq=his[1] # update中的<siteId, seqno>
+                if VTS[siteId]>=seq:
+                    hiss.append(his)
+        return hiss
+    
+    def get_local_history(self):
+        myHis, otherHis = {}, {}
+        for key, value in self.history.items():
+            if self.config_client.is_locally_preferred(key):
+                myHis[key] = value
+            else:
+                otherHis[key] = value
+        return myHis, otherHis
+    

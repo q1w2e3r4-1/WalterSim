@@ -1,6 +1,7 @@
 # backend interface to communicate with the frontend
+import requests
 from .walter.server import Server
-from flask import Flask
+from flask import Flask, request
 
 class Backend:
     def __init__(self, name):
@@ -12,14 +13,9 @@ class Backend:
         #刷新获得服务器的内容
         @app.route("/flush")
         def flush():
-            myHistory,otherHistory={},{}
-            for key,value in History.items():
-                if is_oid_locally_replicated(key):
-                    myHistory[key]=value
-                else:
-                    otherHistory[key]=value
+            myHistory,otherHistory=db_server.get_local_history()
             
-            return {"myHistory":myHistory,"otherHistory":otherHistory,"currentSeqNo":currentSeqNo,"CommittedVTS":CommittedVTS,"GotVTS":GotVTS}
+            return {"myHistory":myHistory,"otherHistory":otherHistory,"currentSeqNo":db_server.currentSeqNo,"CommittedVTS":CommittedVTS,"GotVTS":GotVTS}
 
 
         #通过本接口处理一个事务 事务内容通过POST进行提交
@@ -45,14 +41,14 @@ class Backend:
             print(x)
             #3.尝试提交事务
             print("-------------------[3] 尝试提交.---------------------")
-            commiTx(x)
+            db_server.commitTx(x)
             return {"status":x['outcome'],"data":datas}
 
         #history接口
         @app.route("/history",methods=['POST'])
         def history():
             data=request.get_json()
-            return {"data":history_VTS_visible(data["oid"],data["VTS"])}
+            return {"data":db_server.history_VTS_visible(data["oid"],data["VTS"])}
 
         #同步传播接收接口
         @app.route("/propagate",methods=['POST'])

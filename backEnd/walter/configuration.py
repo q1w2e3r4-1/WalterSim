@@ -592,6 +592,17 @@ class ConfigurationClient:
                 "replica_set": set(info["replica_set"]),
             }
         return info["preferred_site"]
+    
+    def get_preferred_site_url(self, container_id: str):
+        info = self._config_service.get_container_info(container_id)
+        if info is None:
+            return None
+        preferred_site_id = info["preferred_site"]
+        active_sites = self._config_service.get_active_sites()
+        preferred_site_info = active_sites.get(preferred_site_id)
+        if preferred_site_info is None:
+            return None
+        return preferred_site_info["address"]
 
     def get_replica_set(self, container_id: str) -> Optional[Set[int]]:
         """查询容器的副本集，优先从缓存返回"""

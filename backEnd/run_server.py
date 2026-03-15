@@ -7,19 +7,18 @@ run_server.py — Walter 系统服务器启动入口
 构建 ConfigurationService 与 ConfigurationClient，然后启动指定站点的服务器。
 
 用法：
-    # 启动站点 0
-    python -m backEnd.run_server --site 0
+    # 启动所有已配置站点
+    python backEnd\run_server.py
 
-    # 启动站点 1
-    python -m backEnd.run_server --site 1
-
-    # 或直接运行
-    python backEnd/run_server.py --site 0
+    # 启动单个站点
+    python backEnd\run_server.py --site 0
+    python backEnd\run_server.py --site 1
 """
 
 import argparse
 import os
 import sys
+import multiprocessing
 import yaml
 
 # 确保项目根目录在 sys.path 中，便于 import
@@ -218,13 +217,13 @@ def start_server(site_id: int,
     # 目前打印配置验证信息
     #
     # 示例（待 Server/App 完善后启用）：
-    #   from backEnd.walter.server import Server
-    #   from backEnd.app import Backend
-    #
-    #   db_server = Server(total_server_num=total_sites)
-    #   backend = Backend(name)
-    #   app = backend.create_app(host, port, name, db_server)
-    #   app.run(host, port, debug=debug)
+    from backEnd.walter.server import Server
+    from backEnd.app import Backend
+
+    db_server = Server(total_server_num=total_sites, config_client=client)
+    backend = Backend(name)
+    app = backend.create_app(host, port, name, db_server)
+    app.run(host, port, debug=debug, use_reloader=False)
 
     print("\n[INFO] 配置加载完成。服务器逻辑待完善后可在此处启动 Flask app。")
     print("[INFO] 当前仅验证配置是否正确加载。\n")
@@ -238,6 +237,53 @@ def start_server(site_id: int,
     print(json.dumps(client.cache_snapshot(), indent=2, default=str))
 
 
+def start_all_servers(site_config: dict = None,
+                      user_config: dict = None,
+                      debug: bool = True):
+    """
+    启动配置文件中定义的所有站点。
+    """
+    if site_config is None:
+        site_config = load_site_config()
+    if user_config is None:
+        user_config = load_user_config()
+
+    sites = site_config.get("sites", [])
+    if not sites:
+        print("[ERROR] site.yaml 中未配置任何站点")
+        sys.exit(1)
+
+    processes = []
+    print(f"[INFO] 未指定 --site，准备启动全部 {len(sites)} 个站点")
+    for site in sites:
+        sid = site["id"]
+        process = multiprocessing.Process(
+            target=start_server,
+            kwargs={
+                "site_id": sid,
+                "site_config": site_config,
+                "user_config": user_config,
+                "debug": debug,
+            },
+            name=f"walter-site-{sid}",
+        )
+        process.start()
+        processes.append(process)
+        print(f"[INFO] site {sid} 已启动，pid={process.pid}")
+
+    try:
+        for process in processes:
+            process.join()
+    except KeyboardInterrupt:
+        print("\n[INFO] 捕获到 Ctrl+C，正在停止所有站点进程...")
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join()
+        print("[INFO] 所有站点已停止")
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  命令行入口
 # ═══════════════════════════════════════════════════════════════════
@@ -247,8 +293,8 @@ def main():
         description="Walter 系统服务器启动入口"
     )
     parser.add_argument(
-        "--site", type=int, required=True,
-        help="要启动的站点 ID（对应 site.yaml 中的 id）"
+        "--site", type=int, default=None,
+        help="要启动的站点 ID（对应 site.yaml 中的 id）；不传则启动所有站点"
     )
     parser.add_argument(
         "--site-config", type=str, default=None,
@@ -267,12 +313,19 @@ def main():
     site_cfg = load_site_config(args.site_config) if args.site_config else None
     user_cfg = load_user_config(args.user_config) if args.user_config else None
 
-    start_server(
-        site_id=args.site,
-        site_config=site_cfg,
-        user_config=user_cfg,
-        debug=not args.no_debug,
-    )
+    if args.site is None:
+        start_all_servers(
+            site_config=site_cfg,
+            user_config=user_cfg,
+            debug=not args.no_debug,
+        )
+    else:
+        start_server(
+            site_id=args.site,
+            site_config=site_cfg,
+            user_config=user_cfg,
+            debug=not args.no_debug,
+        )
 
 
 if __name__ == "__main__":
