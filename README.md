@@ -13,7 +13,7 @@
 ##### 1. start backend service
 ```cmd
 cd .\backEnd\
-
+python run_server.py
 ```
 ##### 2. start frontend Interface
 Open `.html` file from `frontend` folder in the web browser.
@@ -27,11 +27,11 @@ Open `.html` file from `frontend` folder in the web browser.
     - Alice  site00  ssA01 (regular object)
     - Bob   site01  ssB01 (regular object)
     - Eva    site01  flEva    (cset)
-- 四个预置事务
-    - Alice发表说说 (A)
+- 预置事务
+    - Alice发表说说 (A: fast commit)
         1. Alice写数据到ssA01
         2. Alice读取ssA01
-    - Bob发表说说并评论Alice (B)
+    - Bob评论Alice (B: slow commit)
         1. Bob写数据到ssB01
         2. Bob重写ssA01
         3. Bob读取ssA01
@@ -41,13 +41,11 @@ Open `.html` file from `frontend` folder in the web browser.
     - Bob添加Eva好友 (D) （可指定延时）
         1. Bob写flEva
         2. 读取flEva
+    (C+D: cset conflict solving)
 
-A相当于fast commit
-B相当于slow commit
-C和D不知何意味，首先他这个延时是html延时发送（而非不同site之间的延时），其次cset都不在writeset中，哪里来的冲突
-
-#### TODO:
-1. 添加更多demo事务，至少要把所有可能情况都覆盖到
-
-2. 实验部分的复现，可以复用server00的逻辑，去掉一堆debug信息。
-（要模拟出地域分布特征，通信延时较大）
+    - eva读取Alice的说说（E 因果一致性+长分叉）
+        1. alice（s00）发布说说 T1；
+        2. eve（s01）在 T1 复制到 s01 前，在 s01 站点读取 alice 的说说（返回 “无数据”）；
+        3. eve 在 s01 站点发布说说 T7；
+        4. T1 异步复制到 s01 后，eve 再次读取，能看到 T1，但 T7 的提交顺序在 T1 之前（长分叉）；
+        5. 所有用户最终按物理时间戳排序，看到 T1 在前、T7 在后。

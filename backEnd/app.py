@@ -184,7 +184,7 @@ class Backend:
         def get_user_data():
             uid = request.args.get("uid")
             x = db_server.starTx()
-            posts = db_server.readRegular(x, uid)
+            posts = db_server.readregularvisible(x, uid)
             members = db_server.setRead(x, uid)
             if members is not None:
                 friends = [name for name, cnt in members.items() if cnt > 0]

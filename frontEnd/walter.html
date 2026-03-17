@@ -41,6 +41,7 @@
                         <p>currentSeqNo:{{site00.currentSeqNo}}</p>
                         <p>CommittedVTS:{{site00.CommittedVTS}}</p>
                         <p>GotVTS:{{site00.GotVTS}}</p>
+                        <p>online users: [ Alice ]</p>
                     </div>
                     <el-divider><i class="el-icon-s-data"></i> History</el-divider>
                     <div class="text item" style="padding-top: 20px;">
@@ -60,44 +61,6 @@
                           </el-collapse>
                     </div>
                 </el-card>
-                <el-card class="box-card" style="margin-block-start: 20px;">
-                <div class="item text">
-                    <el-avatar > Alice</el-avatar>
-                </div>
-                <div class="item text">
-                    <el-tabs>
-                        <el-tab-pane label="事务1" name="first">
-                            <p>发表说说</p>
-                            <el-input
-                            type="textarea"
-                            :rows="4"
-                            v-model="AliceT1">
-                            </el-input>
-                            <el-input
-                            type="textarea"
-                            :rows="4"
-                            v-model="AliceT1Result">
-                            </el-input>
-                            <el-button type="primary" size="small" @click="TransAliceT1">执行AT1</el-button>
-                        </el-tab-pane>
-                        <el-tab-pane label="事务2" name="second">
-                            <p>添加Eva好友</p>
-                            <el-input
-                                type="textarea"
-                                :rows="4"
-                                v-model="AliceT2">
-                            </el-input>
-                            <el-input
-                                type="textarea"
-                                :rows="4"
-                                v-model="AliceT2Result">
-                            </el-input>
-                            <span>延迟执行/ms</span> <el-input-number v-model="AliceT2Delay"  :min="1" :max="10000" size="mini" step=500></el-input-number>
-                            <el-button type="primary" size="small" @click="TransAliceT2">执行</el-button>
-                        </el-tab-pane>
-                    </el-tabs>
-                </div>
-                </el-card>
             </el-col>
             <el-col :span="10">
                 <el-card class="box-card" shadow="always">
@@ -109,6 +72,7 @@
                         <p>currentSeqNo:{{site01.currentSeqNo}}</p>
                         <p>CommittedVTS:{{site01.CommittedVTS}}</p>
                         <p>GotVTS:{{site01.GotVTS}}</p>
+                        <p>online users: [ Bob, Eva ]</p>
                     </div>
                     <el-divider><i class="el-icon-s-data"></i> History</el-divider>
                     <div class="text item" style="padding-top: 20px;">
@@ -128,10 +92,83 @@
                           </el-collapse>
                     </div>
                 </el-card>
-                <el-card class="box-card" style="margin-block-start: 20px;">
-                    <div class="item text">
-                        <el-avatar > Bob</el-avatar>
+            </el-col>
+        </el-row>
+
+        <el-row gutter="20" justify="center" type="flex" style="margin-top: 20px; align-items: stretch;">
+            <el-col :span="7">
+                <el-card class="box-card">
+                    <div class="item text" style="display:flex;align-items:center;justify-content:space-between;">
+                        <el-avatar> Alice</el-avatar>
+                        <el-button size="mini" icon="el-icon-refresh" @click="flushAlice">刷新</el-button>
                     </div>
+                    <el-divider content-position="left"><i class="el-icon-chat-line-round"></i> 说说列表</el-divider>
+                    <div class="item text" style="font-size:13px;">
+                        <div v-for="(val,key) in Alice.posts" :key="key" style="margin-bottom:4px;">
+                            <el-tag size="mini" type="info">{{key}}</el-tag> {{val}}
+                        </div>
+                    </div>
+                    <el-divider content-position="left"><i class="el-icon-user"></i> 好友列表</el-divider>
+                    <div class="item text" style="font-size:13px;">
+                        <div v-for="m in Alice.friends" :key="m" style="margin-bottom:4px;">
+                            <el-tag size="mini" type="success">{{m}}</el-tag>
+                        </div>
+                    </div>
+                    <el-divider></el-divider>
+                    <div class="item text">
+                        <el-tabs>
+                            <el-tab-pane label="事务1" name="first">
+                                <p>发表说说</p>
+                                <el-input
+                                type="textarea"
+                                :rows="4"
+                                v-model="AliceT1">
+                                </el-input>
+                                <el-input
+                                type="textarea"
+                                :rows="4"
+                                v-model="AliceT1Result">
+                                </el-input>
+                                <el-button type="primary" size="small" @click="TransAliceT1">执行AT1</el-button>
+                            </el-tab-pane>
+                            <el-tab-pane label="事务2" name="second">
+                                <p>添加Eva好友</p>
+                                <el-input
+                                    type="textarea"
+                                    :rows="4"
+                                    v-model="AliceT2">
+                                </el-input>
+                                <el-input
+                                    type="textarea"
+                                    :rows="4"
+                                    v-model="AliceT2Result">
+                                </el-input>
+                                <span>延迟执行/ms</span> <el-input-number v-model="AliceT2Delay"  :min="1" :max="10000" size="mini" step=500></el-input-number>
+                                <el-button type="primary" size="small" @click="TransAliceT2">执行</el-button>
+                            </el-tab-pane>
+                        </el-tabs>
+                    </div>
+                </el-card>
+            </el-col>
+            <el-col :span="7">
+                <el-card class="box-card">
+                    <div class="item text" style="display:flex;align-items:center;justify-content:space-between;">
+                        <el-avatar> Bob</el-avatar>
+                        <el-button size="mini" icon="el-icon-refresh" @click="flushBob">刷新</el-button>
+                    </div>
+                    <el-divider content-position="left"><i class="el-icon-chat-line-round"></i> 说说列表</el-divider>
+                    <div class="item text" style="font-size:13px;">
+                        <div v-for="(val,key) in Bob.posts" :key="key" style="margin-bottom:4px;">
+                            <el-tag size="mini" type="info">{{key}}</el-tag> {{val}}
+                        </div>
+                    </div>
+                    <el-divider content-position="left"><i class="el-icon-user"></i> 好友列表</el-divider>
+                    <div class="item text" style="font-size:13px;">
+                        <div v-for="m in Bob.friends" :key="m" style="margin-bottom:4px;">
+                            <el-tag size="mini" type="success">{{m}}</el-tag>
+                        </div>
+                    </div>
+                    <el-divider></el-divider>
                     <div class="item text">
                         <el-tabs>
                             <el-tab-pane label="事务1" name="first">
@@ -165,8 +202,58 @@
                         </el-tabs>
                     </div>
                 </el-card>
-                <el-card lass="box-card" style="margin-block-start: 20px;">
-                    <el-avatar > Eva</el-avatar>
+            </el-col>
+            <el-col :span="7">
+                <el-card class="box-card">
+                    <div class="item text" style="display:flex;align-items:center;justify-content:space-between;">
+                        <el-avatar> Eva</el-avatar>
+                        <el-button size="mini" icon="el-icon-refresh" @click="flushEva">刷新</el-button>
+                    </div>
+                    <el-divider content-position="left"><i class="el-icon-chat-line-round"></i> 说说列表</el-divider>
+                    <div class="item text" style="font-size:13px;">
+                        <div v-for="(val,key) in Eva.posts" :key="key" style="margin-bottom:4px;">
+                            <el-tag size="mini" type="info">{{key}}</el-tag> {{val}}
+                        </div>
+                    </div>
+                    <el-divider content-position="left"><i class="el-icon-user"></i> 好友列表</el-divider>
+                    <div class="item text" style="font-size:13px;">
+                        <div v-for="m in Eva.friends" :key="m" style="margin-bottom:4px;">
+                            <el-tag size="mini" type="success">{{m}}</el-tag>
+                        </div>
+                    </div>
+                    <el-divider></el-divider>
+                    <div class="item text">
+                        <el-tabs>
+                            <el-tab-pane label="事务1" name="first">
+                                <p style="color:#909399;font-size:12px;">步骤E: 先读ssA01（预期无数据），写自己说说ssB01，再读ssA01（传播前仍无）</p>
+                                <el-input
+                                    type="textarea"
+                                    :rows="4"
+                                    v-model="EvaT1">
+                                </el-input>
+                                <el-input
+                                    type="textarea"
+                                    :rows="4"
+                                    v-model="EvaT1Result">
+                                </el-input>
+                                <el-button type="primary" size="small" @click="TransEvaT1">执行</el-button>
+                            </el-tab-pane>
+                            <el-tab-pane label="事务2" name="second">
+                                <p style="color:#909399;font-size:12px;">T1传播到s01后再读ssA01，可见Alice说说（长分叉验证）</p>
+                                <el-input
+                                    type="textarea"
+                                    :rows="3"
+                                    v-model="EvaT2">
+                                </el-input>
+                                <el-input
+                                    type="textarea"
+                                    :rows="3"
+                                    v-model="EvaT2Result">
+                                </el-input>
+                                <el-button type="primary" size="small" @click="TransEvaT2">执行</el-button>
+                            </el-tab-pane>
+                        </el-tabs>
+                    </div>
                 </el-card>
             </el-col>
         </el-row>
@@ -192,20 +279,38 @@
 ]",
             AliceT1Result:"",
             AliceT2:"[\n\
+    [\"setAdd\", \"ssA01\", \"Eva\"],\n\
     [\"setAdd\",\"flEve\",\"Alice\"],\n\
     [\"setRead\",\"flEve\"]\n\
 ]",
             AliceT2Result:"",
             //Bob的事务T1 T2
-            BobT1:"[ [\"write\",\"ssB01\",\"Bob的说说1\"],\n\
+            BobT1:"[\n\
     [\"write\",\"ssA01\",\"Alice的说说1 (Bob 评论说：点赞)\"],\n\
     [\"read\",\"ssA01\"]\n\
 ]",         BobT1Result:"",
             BobT2:"[\n\
+    [\"setAdd\", \"ssB01\", \"Eva\"],\n\
     [\"setAdd\",\"flEve\",\"Bob\"],\n\
     [\"setRead\",\"flEve\"]\n\
 ]",
-            BobT2Result:""
+            BobT2Result:"",
+            //Eva的事务T1：先读ssA01(预期空/无数据)，再写ssB01(发自己说说)，再读ssA01(T1传播后可见)
+            EvaT1:"[\n\
+    [\"read\",\"ssA01\"],\n\
+    [\"write\",\"flEve\",\"Eva的说说T7\"],\n\
+    [\"read\",\"ssA01\"]\n\
+]",
+            EvaT1Result:"",
+            //Eva的事务T2：T1传播到s01后，再次读取ssA01，应能看到Alice的说说(长分叉)
+            EvaT2:"[\n\
+    [\"read\",\"ssA01\"]\n\
+]",
+            EvaT2Result:"",
+            // 用户数据
+            Alice:{ posts:{}, friends:{} },
+            Bob:  { posts:{}, friends:{} },
+            Eva:  { posts:{}, friends:{} }
             },
         methods:{
             //刷新site00
@@ -240,6 +345,9 @@
                     vm.autoTimer = setInterval(function(){
                         vm.flushsite00();
                         vm.flushsite01();
+                        vm.flushAlice();
+                        vm.flushBob();
+                        vm.flushEva();
                     },1000);
             },
 
@@ -250,14 +358,46 @@
                     vm.autoTimer=null;
             },
 
-            //上传事务AliceT1
+            // 刷新 Alice 用户数据（连接 server 0）
+            flushAlice:function(){
+                var vm=this;
+                axios.post('http://127.0.0.1:5000/user_data?uid=ssA01', {})
+                    .then(function(res){
+                        vm.Alice.posts   = res.data.posts || {};
+                        vm.Alice.friends = res.data.friends || {};
+                    }).catch(function(){ console.log('Alice刷新失败'); });
+            },
+
+            // 刷新 Bob 用户数据（连接 server 1）
+            flushBob:function(){
+                var vm=this;
+                axios.post('http://127.0.0.1:5001/user_data?uid=ssB01', {})
+                    .then(function(res){
+                        vm.Bob.posts   = res.data.posts || {};
+                        vm.Bob.friends = res.data.friends || {};
+                    }).catch(function(){ console.log('Bob刷新失败'); });
+            },
+
+            // 刷新 Eva 用户数据（连接 server 1）
+            flushEva:function(){
+                var vm=this;
+                axios.post('http://127.0.0.1:5001/user_data?uid=flEve', {})
+                    .then(function(res){
+                        vm.Eva.posts   = res.data.posts || {};
+                        vm.Eva.friends = res.data.friends || {};
+                    }).catch(function(){ console.log('Eva刷新失败'); });
+            },
+
+            //上传事务AliceT1：写ssA01（发表说说）并读取
             TransAliceT1:function(){
                 var vm=this;
-                axios.post('http://127.0.0.1:5000/transaction',JSON.parse(this.AliceT1))
+                var events = JSON.parse(this.AliceT1);
+                axios.post('http://127.0.0.1:5000/transaction',events)
                      .then(function(res){
                         console.log("请求API成功")
-                        vm.AliceT1Result=JSON.stringify(res.data)
+                        vm.AliceT1Result=JSON.stringify(res.data, null, 2)
                         vm.flushsite00()
+                        vm.flushAlice()
                      })
                      .catch(function(erroe){
                         console.log("请求API失败")
@@ -270,25 +410,45 @@
  
                 this.timer = setTimeout(()=>{   //设置延迟执行
                     var vm=this;
-                    axios.post('http://127.0.0.1:5000/transaction',JSON.parse(this.AliceT2))
+                    var events = JSON.parse(this.AliceT2);
+                    axios.post('http://127.0.0.1:5000/transaction',events)
                      .then(function(res){
                         console.log("AT2请求API成功")
                         vm.AliceT2Result=JSON.stringify(res.data)
                         vm.flushsite00()
+                        events.forEach(function(e){
+                            if(e[0]==='setAdd'){
+                                axios.post('http://127.0.0.1:5000/add_friend', {
+                                    uid:'ssA01',
+                                    setid:e[1],
+                                    friend_name:e[2]
+                                });
+                            }
+                            if(e[0]==='setDel'){
+                                axios.post('http://127.0.0.1:5000/del_friend', {
+                                    uid:'ssA01',
+                                    setid:e[1],
+                                    friend_name:e[2]
+                                });
+                            }
+                        });
+                        vm.flushAlice();
                      })
                      .catch(function(erroe){
                         console.log("AT1请求API失败")
                      })
                 },this.AliceT2Delay);
                 },
-            //上传事务BobT1
+            //上传事务BobT1：写ssA01评论（跨站点写）并读取
             TransBobT1:function(){
                 var vm=this;
-                axios.post('http://127.0.0.1:5001/transaction',JSON.parse(this.BobT1))
+                var events = JSON.parse(this.BobT1);
+                axios.post('http://127.0.0.1:5001/transaction',events)
                      .then(function(res){
                         console.log("请求API成功")
-                        vm.BobT1Result=JSON.stringify(res.data)
+                        vm.BobT1Result=JSON.stringify(res.data, null, 2)
                         vm.flushsite01()
+                        vm.flushBob()
                      })
                      .catch(function(erroe){
                         console.log("请求API失败")
@@ -297,16 +457,64 @@
             //上传事务AliceT2
             TransBobT2:function(){
                 var vm=this;
-                axios.post('http://127.0.0.1:5001/transaction',JSON.parse(this.BobT2))
+                var events = JSON.parse(this.BobT2);
+                axios.post('http://127.0.0.1:5001/transaction',events)
                      .then(function(res){
                         console.log("请求API成功")
                         vm.BobT2Result=JSON.stringify(res.data)
                         vm.flushsite01()
+                        events.forEach(function(e){
+                            if(e[0]==='setAdd'){
+                                axios.post('http://127.0.0.1:5001/add_friend', {
+                                    uid:'ssB01',
+                                    setid:e[1],
+                                    friend_name:e[2]
+                                });
+                            }
+                            if(e[0]==='setDel'){
+                                axios.post('http://127.0.0.1:5001/del_friend', {
+                                    uid:'ssB01',
+                                    setid:e[1],
+                                    friend_name:e[2]
+                                });
+                            }
+                        });
+                        vm.flushBob();
                      })
                      .catch(function(erroe){
                         console.log("请求API失败")
                      })
                 },
+            //上传事务EvaT1：先读ssA01，写ssB01，再读ssA01（传播前后对比）
+            TransEvaT1:function(){
+                    var vm=this;
+                    var events = JSON.parse(this.EvaT1);
+                    axios.post('http://127.0.0.1:5001/transaction',events)
+                        .then(function(res){
+                            console.log("EvaT1请求API成功")
+                            vm.EvaT1Result=JSON.stringify(res.data, null, 2)
+                            vm.flushsite01()
+                            vm.flushEva()
+                        })
+                        .catch(function(erroe){
+                            console.log("EvaT1请求API失败")
+                        })
+                    },
+            //上传事务EvaT2：T1传播后再读ssA01，验证长分叉
+            TransEvaT2:function(){
+                    var vm=this;
+                    var events = JSON.parse(this.EvaT2);
+                    axios.post('http://127.0.0.1:5001/transaction',events)
+                        .then(function(res){
+                            console.log("EvaT2请求API成功")
+                            vm.EvaT2Result=JSON.stringify(res.data, null, 2)
+                            vm.flushsite01()
+                            vm.flushEva()
+                        })
+                        .catch(function(erroe){
+                            console.log("EvaT2请求API失败")
+                        })
+                    },
         },
         //生命周期钩子
         created:function(){

@@ -21,6 +21,11 @@ class Server:
         self.object_locks       = {}                         # 慢提交对象锁 {oid: tid}
         self.object_locks_mutex = threading.Lock()           # 保护 object_locks
 
+        self.name_to_id = {
+            "Alice": "ssA01",
+            "Bob":   "ssB01",
+            "Eva":   "flEve",
+        }
     # ──────────────── 内部辅助 ──────────────────────────────────────────── #
 
     def _get_site_url(self, site_id: int) -> str:
@@ -58,39 +63,36 @@ class Server:
         x.add_update(['SET_DEL', setid, elem])
         return None
 
-    def readRegular(self, x: Transaction, oid):
-        """专门读取 regular object（非 cset）；不存在时返回 None"""
-        # 排除 cset 对象
-        if str(oid).lower().startswith("fl"):
-            return None
+    def readregularvisible(self, x: Transaction, oid):
+        """
+        读取可见 regular object 列表：
+        1) 先通过 setRead(oid) 得到可见 uid 列表；
+        2) 把传入 oid 加入 uid 列表；
+        3) 返回所有涉及这些 uid 的 regular object 的 WRITE 结果列表。
+        """
+        uid_tokens = []
+        members = self.setRead(x, oid)
+        if members is not None:
+            for name, cnt in members.items():
+                if cnt > 0:
+                    uid_tokens.append(self.name_to_id.get(name, name))
+        uid_tokens.append(str(oid))
 
-        states = [s for s in x.updates if s[1] == oid]
-        hiss   = self.history_VTS_visible(oid, x.startVTS)
+        # 读取 x.startVTS 可见的 WRITE 记录，并按 commitVTS 排序
+        visible_writes = []
+        for uid in uid_tokens:
+            hiss = self.history.get(uid, [])
+            for his in hiss:
+                op = his[0]
+                if op[0] != 'WRITE':
+                    continue
+                visible_writes.append((his[1], op))
 
-        if self.config_client.is_locally_preferred(oid):
-            if states:
-                return states[-1][2]
-            elif hiss:
-                return hiss[-1][0][2]
-            else:
-                return None   # 对象尚不存在
-        else:
-            siteUrl = self.config_client.get_preferred_site_url(oid)
-            site_hiss = []
-            if siteUrl:
-                try:
-                    res = requests.post(siteUrl + "/history", json={"oid": oid, "VTS": x.startVTS})
-                    site_hiss = json.loads(res.text).get('data', [])
-                except Exception:
-                    site_hiss = []
-            if states:
-                return states[-1][2]
-            elif site_hiss:
-                return site_hiss[-1][0][2]
-            elif hiss:
-                return hiss[-1][0][2]
-            else:
-                return None   # 对象尚不存在
+        # commitVTS=(site_id, seqno)，按提交先后排序：先 seqno 再 site_id
+        visible_writes.sort(key=lambda item: (item[0][1], item[0][0]))
+        return [op[2] for _, op in visible_writes]
+
+
 
     def read(self, x: Transaction, oid):
         """读取一个对象；对象不存在时返回 None"""
@@ -376,7 +378,7 @@ def _propagate_worker(other_site_ids: list, site_url_map: dict, my_site_id: int,
     print("╭────────────────────────────────[进程] 同步传播─────────────────────────────────────╮")
     print("│ ", x_dict)
     print("│ ⏱  等待 {}s 后开始传播...".format(PROPAGATE_DELAY))
-    # time.sleep(PROPAGATE_DELAY)
+    time.sleep(PROPAGATE_DELAY)
     print("│ --------------------------------------1. 传播--------------------------------------------------------")
     for sid in other_site_ids:
         serverUrl = site_url_map[sid]
