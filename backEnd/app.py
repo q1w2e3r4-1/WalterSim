@@ -8,7 +8,12 @@ class Backend:
     def __init__(self, name):
         pass
 
-    def create_app(self, host, port, name, db_server: Server):
+    def create_app(self, name, db_server: Server):
+
+        self.containers = {
+            # uid : {posts:[],friends:[]}
+        }
+
         app = Flask(name)
 
         # 刷新获得服务器的内容
@@ -35,22 +40,31 @@ class Backend:
             event_list = request.get_json()
             print(event_list)
             datas = {}
-            for event in event_list:
-                event_type = event[0]
-                method = getattr(db_server, event_type, None)
-                if method is None:
-                    continue
-                if "read" in event_type.lower():
-                    ret = method(x, event[1])
-                else:
-                    ret = method(x, event[1], event[2])
-                if ret is not None:
-                    datas[event[1]] = ret
-            print(x)
+            try:
+                for event in event_list:
+                    event_type = event[0]
+                    method = getattr(db_server, event_type, None)
+                    if method is None:
+                        continue
+                    if "read" in event_type.lower():
+                        ret = method(x, event[1])
+                    else:
+                        ret = method(x, event[1], event[2])
+                    # read 返回 None 表示对象不存在，记录为 null 但继续执行
+                    if ret is not None:
+                        datas[event[1]] = ret
+                    elif "read" in event_type.lower():
+                        datas[event[1]] = None
+                print(x)
 
-            print("-------------------[3] 尝试提交.---------------------")
-            db_server.commitTx(x)
-            return {"status": x.outcome, "data": datas}
+                print("-------------------[3] 尝试提交.---------------------")
+                db_server.commitTx(x)
+                return {"status": x.outcome, "data": datas}
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                x.outcome = "ABORTED"
+                return {"status": "ABORTED", "error": str(e), "data": datas}, 500
 
         # history 接口
         @app.route("/history", methods=['POST'])
@@ -164,5 +178,63 @@ class Backend:
             print("╰──────────────────────────────────────────────────────────────────────────╯")
             return {"status": "OK"}
 
-        return app
+        #---------------------------用户数据相关接口---------------------------#
 
+        @app.route("/user_data", methods=['POST'])
+        def get_user_data():
+            uid = request.args.get("uid")
+            x = db_server.starTx()
+            posts = db_server.readRegular(x, uid)
+            members = db_server.setRead(x, uid)
+            if members is not None:
+                friends = [name for name, cnt in members.items() if cnt > 0]
+            else:
+                friends = []
+            return {"status": "OK", "posts": posts, "friends": friends}, 200
+
+        @app.route("/add_post", methods=['POST'])
+        def add_post():
+            """保留兼容接口；实际展示已改用 history 驱动，此接口可用于补充写入"""
+            data    = request.get_json()
+            uid     = data.get("uid", "")
+            oid     = data.get("oid", "")
+            content = data.get("content", "")
+            if uid and oid and content:
+                if uid not in self.containers:
+                    self.containers[uid] = {"posts": {}, "friends": {}}
+                self.containers[uid]["posts"][oid] = content
+                return {"status": "OK"}, 200
+            return {"status": "ERROR", "message": "uid/oid/content required"}, 400
+
+        @app.route("/add_friend", methods=['POST'])
+        def add_friend():
+            data        = request.get_json()
+            uid         = data.get("uid", "")
+            setid       = data.get("setid", "")
+            friend_name = data.get("friend_name", "")
+            if uid and setid and friend_name:
+                if uid not in self.containers:
+                    self.containers[uid] = {"posts": {}, "friends": {}}
+                fl = self.containers[uid]["friends"]
+                fl.setdefault(setid, [])
+                if friend_name not in fl[setid]:
+                    fl[setid].append(friend_name)
+                return {"status": "OK"}, 200
+            return {"status": "ERROR", "message": "uid/setid/friend_name required"}, 400
+
+        @app.route("/del_friend", methods=['POST'])
+        def del_friend():
+            data        = request.get_json()
+            uid         = data.get("uid", "")
+            setid       = data.get("setid", "")
+            friend_name = data.get("friend_name", "")
+            if uid and setid and friend_name:
+                if uid not in self.containers:
+                    return {"status": "OK"}, 200
+                fl = self.containers[uid]["friends"]
+                if setid in fl and friend_name in fl[setid]:
+                    fl[setid].remove(friend_name)
+                return {"status": "OK"}, 200
+            return {"status": "ERROR", "message": "uid/setid/friend_name required"}, 400
+
+        return app

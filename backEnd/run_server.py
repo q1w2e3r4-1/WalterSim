@@ -223,7 +223,7 @@ def start_server(site_id: int,
 
     db_server = Server(total_server_num=total_sites, config_client=client)
     backend = Backend(name)
-    app = backend.create_app(host, port, name, db_server)
+    app = backend.create_app(name, db_server)
     CORS(app, support_credentials=True)  # 允许跨域请求，支持携带 Cookie
     app.run(host, port, debug=debug, use_reloader=False)
 

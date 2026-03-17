@@ -58,35 +58,86 @@ class Server:
         x.add_update(['SET_DEL', setid, elem])
         return None
 
-    def read(self, x: Transaction, oid):
-        """读取一个对象"""
+    def readRegular(self, x: Transaction, oid):
+        """专门读取 regular object（非 cset）；不存在时返回 None"""
+        # 排除 cset 对象
+        if str(oid).lower().startswith("fl"):
+            return None
+
         states = [s for s in x.updates if s[1] == oid]
         hiss   = self.history_VTS_visible(oid, x.startVTS)
 
         if self.config_client.is_locally_preferred(oid):
-            data = states[-1][2] if states else hiss[-1][0][2]
-            return data
+            if states:
+                return states[-1][2]
+            elif hiss:
+                return hiss[-1][0][2]
+            else:
+                return None   # 对象尚不存在
         else:
-            siteUrl   = self.config_client.get_preferred_site_url(oid)
-            res       = requests.post(siteUrl + "/history", json={"oid": oid, "VTS": x.startVTS})
-            site_hiss = json.loads(res.text).get('data', [])
+            siteUrl = self.config_client.get_preferred_site_url(oid)
+            site_hiss = []
+            if siteUrl:
+                try:
+                    res = requests.post(siteUrl + "/history", json={"oid": oid, "VTS": x.startVTS})
+                    site_hiss = json.loads(res.text).get('data', [])
+                except Exception:
+                    site_hiss = []
             if states:
                 return states[-1][2]
             elif site_hiss:
                 return site_hiss[-1][0][2]
-            else:
+            elif hiss:
                 return hiss[-1][0][2]
+            else:
+                return None   # 对象尚不存在
+
+    def read(self, x: Transaction, oid):
+        """读取一个对象；对象不存在时返回 None"""
+        states = [s for s in x.updates if s[1] == oid]
+        hiss   = self.history_VTS_visible(oid, x.startVTS)
+
+        if self.config_client.is_locally_preferred(oid):
+            if states:
+                return states[-1][2]
+            elif hiss:
+                return hiss[-1][0][2]
+            else:
+                return None   # 对象尚不存在
+        else:
+            siteUrl   = self.config_client.get_preferred_site_url(oid)
+            try:
+                res       = requests.post(siteUrl + "/history", json={"oid": oid, "VTS": x.startVTS})
+                site_hiss = json.loads(res.text).get('data', [])
+            except Exception:
+                site_hiss = []
+            if states:
+                return states[-1][2]
+            elif site_hiss:
+                return site_hiss[-1][0][2]
+            elif hiss:
+                return hiss[-1][0][2]
+            else:
+                return None   # 对象尚不存在
 
     def setRead(self, x: Transaction, setid):
-        """集合读"""
+        """集合读；集合不存在或不可读时返回 None"""
         states = [s for s in x.updates if s[1] == setid]
         hiss   = self.history_VTS_visible(setid, x.startVTS)
 
         if not self.config_client.is_locally_preferred(setid):
-            siteUrl   = self.config_client.get_preferred_site_url(setid)
-            res       = requests.post(siteUrl + "/history", json={"oid": setid, "VTS": x.startVTS})
-            site_hiss = json.loads(res.text).get('data', [])
-            hiss     += site_hiss
+            siteUrl = self.config_client.get_preferred_site_url(setid)
+            site_hiss = []
+            if siteUrl:
+                try:
+                    res = requests.post(siteUrl + "/history", json={"oid": setid, "VTS": x.startVTS})
+                    site_hiss = json.loads(res.text).get('data', [])
+                except Exception:
+                    site_hiss = []
+            hiss += site_hiss
+
+        if not states and not hiss:
+            return None
 
         data = {}
         for state in states:
@@ -314,6 +365,9 @@ def _tx_to_dict(x: Transaction) -> dict:
     }
 
 
+PROPAGATE_DELAY = 10  # 站点间异步传播延迟（秒），用于模拟长分叉场景
+
+
 def _propagate_worker(other_site_ids: list, site_url_map: dict, my_site_id: int, x_dict: dict):
     """
     在独立进程中执行传播逻辑。
@@ -321,6 +375,8 @@ def _propagate_worker(other_site_ids: list, site_url_map: dict, my_site_id: int,
     """
     print("╭────────────────────────────────[进程] 同步传播─────────────────────────────────────╮")
     print("│ ", x_dict)
+    print("│ ⏱  等待 {}s 后开始传播...".format(PROPAGATE_DELAY))
+    # time.sleep(PROPAGATE_DELAY)
     print("│ --------------------------------------1. 传播--------------------------------------------------------")
     for sid in other_site_ids:
         serverUrl = site_url_map[sid]
