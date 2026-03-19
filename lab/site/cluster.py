@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import time
-from typing import Dict, Tuple
+from typing import Dict, Iterable, Tuple
 
 from core.config import SITE_IDS
 from network.rpc import MessageTypes, RpcClient
@@ -18,11 +18,12 @@ def _run_site_entry(site_id: int) -> None:
 class ClusterManager:
     """Starts and controls local multi-process site cluster for experiments."""
 
-    def __init__(self):
+    def __init__(self, site_ids: Iterable[int] | None = None):
         self.processes: Dict[int, mp.Process] = {}
+        self.site_ids = list(SITE_IDS if site_ids is None else site_ids)
 
     def start_all(self) -> Dict[int, mp.Process]:
-        for site_id in SITE_IDS:
+        for site_id in self.site_ids:
             proc = mp.Process(target=_run_site_entry, args=(site_id,), daemon=True)
             proc.start()
             self.processes[site_id] = proc
@@ -31,7 +32,7 @@ class ClusterManager:
     def wait_healthy(self, timeout_seconds: float = 8.0) -> None:
         client = RpcClient(timeout_seconds=1.0)
         deadline = time.time() + timeout_seconds
-        pending = set(SITE_IDS)
+        pending = set(self.site_ids)
 
         while time.time() < deadline and pending:
             done = set()
@@ -53,8 +54,8 @@ class ClusterManager:
         client = RpcClient(timeout_seconds=5.0)
         results: Dict[Tuple[int, int], float] = {}
 
-        for src in SITE_IDS:
-            for dst in SITE_IDS:
+        for src in self.site_ids:
+            for dst in self.site_ids:
                 if src == dst:
                     continue
                 resp = client.send_request(
@@ -70,7 +71,7 @@ class ClusterManager:
 
     def stop_all(self) -> None:
         client = RpcClient(timeout_seconds=1.0)
-        for site_id in SITE_IDS:
+        for site_id in self.site_ids:
             try:
                 client.send_request(site_id, {"type": MessageTypes.STOP}, apply_delay=False)
             except Exception:

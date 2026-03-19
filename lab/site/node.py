@@ -6,11 +6,12 @@ health checks and mesh ping tests.
 
 from __future__ import annotations
 
+import queue
 import threading
 import time
 from typing import Any, Dict, List
 
-from core.config import SITE_IDS, SITE_NAMES, get_link_delay_seconds, get_preferred_site, get_site_address
+from core.config import SITE_IDS, SITE_NAMES, get_active_site_ids, get_link_delay_seconds, get_preferred_site, get_site_address
 from core.types_store import CsetStore, SiteClock, Transaction, VectorTimestamp, Version, VersionedObjectStore
 from network.rpc import MessageTypes, RpcClient, RpcServer
 
@@ -21,6 +22,7 @@ class WalterSiteRuntime:
     def __init__(self, site_id: int):
         self.site_id = site_id
         self.site_name = SITE_NAMES[site_id]
+        self.active_site_ids = get_active_site_ids()
         self.address = get_site_address(site_id)
         self.rpc_client = RpcClient()
         self.clock = SiteClock(site_id=site_id)
@@ -29,10 +31,14 @@ class WalterSiteRuntime:
         self.active_txs: Dict[int, Transaction] = {}
         self.prepared_writes: Dict[str, Dict[str, Any]] = {}
         self.key_locks: Dict[str, str] = {}
-        self.got_vts: Dict[int, int] = {sid: 0 for sid in SITE_IDS}
+        self.got_vts: Dict[int, int] = {sid: 0 for sid in self.active_site_ids}
         self.pending_propagations: List[Dict[str, Any]] = []
         self._next_tid = 1
         self._state_lock = threading.Lock()
+        self._propagation_queue: queue.Queue[Dict[str, Any] | None] = queue.Queue()
+        self._propagation_stop = threading.Event()
+        self._propagation_worker = threading.Thread(target=self._propagation_loop, daemon=True)
+        self._propagation_worker.start()
         self.rpc_server = RpcServer(
             host=self.address.host,
             port=self.address.port,
@@ -47,12 +53,37 @@ class WalterSiteRuntime:
         self.rpc_server.serve_forever()
 
     def stop(self) -> None:
+        self._propagation_stop.set()
+        self._propagation_queue.put(None)
         self.rpc_server.stop()
+
+    def _propagation_loop(self) -> None:
+        while not self._propagation_stop.is_set():
+            payload = self._propagation_queue.get()
+            if payload is None:
+                return
+            for site_id in self.active_site_ids:
+                if site_id == self.site_id:
+                    continue
+                try:
+                    self.rpc_client.send_request(
+                        to_site=site_id,
+                        message=payload,
+                        from_site=self.site_id,
+                        apply_delay=True,
+                    )
+                except Exception:
+                    pass
 
     def _release_locks(self, txid: str) -> None:
         locked_oids = [oid for oid, owner in self.key_locks.items() if owner == txid]
         for oid in locked_oids:
             self.key_locks.pop(oid, None)
+
+    def _allocate_tid_locked(self) -> int:
+        tid = self._next_tid
+        self._next_tid += 1
+        return tid
 
     def _deps_satisfied(self, start_snapshot: VectorTimestamp, from_site: int) -> bool:
         for dep_site, dep_seq in start_snapshot.clocks.items():
@@ -125,22 +156,7 @@ class WalterSiteRuntime:
             "start_vts": start_snapshot.to_dict(),
             "writes": list(writes),
         }
-
-        def _worker() -> None:
-            for site_id in SITE_IDS:
-                if site_id == self.site_id:
-                    continue
-                try:
-                    self.rpc_client.send_request(
-                        to_site=site_id,
-                        message=payload,
-                        from_site=self.site_id,
-                        apply_delay=True,
-                    )
-                except Exception:
-                    pass
-
-        threading.Thread(target=_worker, daemon=True).start()
+        self._propagation_queue.put(payload)
 
     def _prepare_local_writes(self, txid: str, start_vts: Dict[int, int], writes: List[Dict[str, Any]]) -> tuple[bool, str]:
         if not writes:
@@ -358,13 +374,121 @@ class WalterSiteRuntime:
             "remote_commit_errors": remote_commit_errors,
         }
 
+    def _handle_read_one_tx(self, oid: str) -> Dict[str, Any]:
+        """Benchmark-only path: perform TX_START+TX_READ+TX_COMMIT in one RPC."""
+
+        with self._state_lock:
+            start_vts = self.clock.current_snapshot()
+            visible_value = self.store.get_visible(oid=oid, start_vts=start_vts)
+            if visible_value is not None:
+                value = visible_value
+                source = "TX_SNAPSHOT"
+            else:
+                value = self.store.get_latest(oid)
+                source = "STORE_LATEST"
+
+        return {
+            "ok": True,
+            "type": MessageTypes.TX_COMMIT_OK,
+            "commit_mode": "FAST",
+            "oid": oid,
+            "value": value,
+            "source": source,
+        }
+
+    def _handle_write_one_tx(self, oid: str, value: Any) -> Dict[str, Any]:
+        """Benchmark-only path: perform TX_START+TX_WRITE+TX_COMMIT in one RPC."""
+
+        preferred = get_preferred_site(oid, default_site_id=self.site_id)
+        if preferred != self.site_id:
+            return {
+                "ok": False,
+                "type": MessageTypes.TX_COMMIT_ABORT,
+                "reason": f"one_rpc_write_nonlocal_preferred_site={preferred}",
+            }
+
+        with self._state_lock:
+            tid = self._allocate_tid_locked()
+            tx = Transaction(tid=tid, start_vts=self.clock.current_snapshot())
+            tx.add_write(oid=oid, payload=value)
+            return self._commit_fast(tx)
+
+    def _handle_bench_regular_tx(
+        self,
+        local_oid: str,
+        local_value: Any,
+        remote_oid: str,
+        remote_value: Any,
+    ) -> Dict[str, Any]:
+        """Benchmark-only path for regular case in one RPC (still executes real commit logic)."""
+
+        with self._state_lock:
+            tid = self._allocate_tid_locked()
+            tx = Transaction(tid=tid, start_vts=self.clock.current_snapshot())
+            tx.add_write(oid=local_oid, payload=local_value)
+            tx.add_write(oid=remote_oid, payload=remote_value)
+
+        write_oids = {op.oid for op in tx.updates if op.op_type == "WRITE"}
+        touched_sites = {get_preferred_site(oid, default_site_id=self.site_id) for oid in write_oids}
+        if touched_sites.issubset({self.site_id}):
+            with self._state_lock:
+                return self._commit_fast(tx)
+        return self._commit_slow_2pc(tx)
+
+    def _handle_bench_cset_tx(self, oid: str, add_element_id: str, del_element_id: str) -> Dict[str, Any]:
+        """Benchmark-only path for cset case in one RPC."""
+
+        with self._state_lock:
+            tid = self._allocate_tid_locked()
+            tx = Transaction(tid=tid, start_vts=self.clock.current_snapshot())
+            tx.add_cset_add(oid=oid, element_id=add_element_id)
+            tx.add_cset_del(oid=oid, element_id=del_element_id)
+            return self._commit_fast(tx)
+
+    def _handle_bench_fast_tx(self, mode: str, objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Benchmark-only path for one-RPC read/write tx with 1 or 5 objects."""
+
+        if mode == "read":
+            with self._state_lock:
+                start_vts = self.clock.current_snapshot()
+                results: List[Dict[str, Any]] = []
+                for item in objects:
+                    oid = str(item["oid"])
+                    value = self.store.get_visible(oid=oid, start_vts=start_vts)
+                    if value is None:
+                        value = self.store.get_latest(oid)
+                    results.append({"oid": oid, "value": value})
+
+            return {
+                "ok": True,
+                "type": MessageTypes.TX_COMMIT_OK,
+                "commit_mode": "FAST",
+                "results": results,
+            }
+
+        if mode == "write":
+            with self._state_lock:
+                tid = self._allocate_tid_locked()
+                tx = Transaction(tid=tid, start_vts=self.clock.current_snapshot())
+                for item in objects:
+                    oid = str(item["oid"])
+                    payload = item.get("value")
+                    tx.add_write(oid=oid, payload=payload)
+
+                touched_sites = {get_preferred_site(op.oid, default_site_id=self.site_id) for op in tx.updates}
+                if touched_sites.issubset({self.site_id}):
+                    return self._commit_fast(tx)
+
+            return self._commit_slow_2pc(tx)
+
+        return {"ok": False, "error": f"unsupported_mode={mode}"}
+
     def _handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         msg_type = request.get("type")
 
         if msg_type == MessageTypes.TX_START:
             with self._state_lock:
-                tid = self._next_tid
-                self._next_tid += 1
+                tid = self._allocate_tid_locked()
                 tx = Transaction(tid=tid, start_vts=self.clock.current_snapshot())
                 self.active_txs[tid] = tx
             return {
@@ -374,6 +498,69 @@ class WalterSiteRuntime:
                 "tid": tid,
                 "start_vts": tx.start_vts.to_dict(),
             }
+
+        if msg_type == MessageTypes.TX_READ_ONE_TX:
+            oid = request.get("oid")
+            if not isinstance(oid, str):
+                return {"ok": False, "error": "oid must be str"}
+            return self._handle_read_one_tx(oid=oid)
+
+        if msg_type == MessageTypes.TX_WRITE_ONE_TX:
+            oid = request.get("oid")
+            value = request.get("value")
+            if not isinstance(oid, str):
+                return {"ok": False, "error": "oid must be str"}
+            return self._handle_write_one_tx(oid=oid, value=value)
+
+        if msg_type == MessageTypes.TX_BENCH_REGULAR_TX:
+            local_oid = request.get("local_oid")
+            remote_oid = request.get("remote_oid")
+            local_value = request.get("local_value")
+            remote_value = request.get("remote_value")
+            if not isinstance(local_oid, str):
+                return {"ok": False, "error": "local_oid must be str"}
+            if not isinstance(remote_oid, str):
+                return {"ok": False, "error": "remote_oid must be str"}
+            return self._handle_bench_regular_tx(
+                local_oid=local_oid,
+                local_value=local_value,
+                remote_oid=remote_oid,
+                remote_value=remote_value,
+            )
+
+        if msg_type == MessageTypes.TX_BENCH_CSET_TX:
+            oid = request.get("oid")
+            add_element_id = request.get("add_element_id")
+            del_element_id = request.get("del_element_id")
+            if not isinstance(oid, str):
+                return {"ok": False, "error": "oid must be str"}
+            if not isinstance(add_element_id, str):
+                return {"ok": False, "error": "add_element_id must be str"}
+            if not isinstance(del_element_id, str):
+                return {"ok": False, "error": "del_element_id must be str"}
+            return self._handle_bench_cset_tx(
+                oid=oid,
+                add_element_id=add_element_id,
+                del_element_id=del_element_id,
+            )
+
+        if msg_type == MessageTypes.TX_BENCH_FAST_TX:
+            mode = request.get("mode")
+            objects = request.get("objects")
+            if mode not in {"read", "write"}:
+                return {"ok": False, "error": "mode must be read or write"}
+            if not isinstance(objects, list):
+                return {"ok": False, "error": "objects must be list"}
+            if not objects:
+                return {"ok": False, "error": "objects cannot be empty"}
+            for obj in objects:
+                if not isinstance(obj, dict):
+                    return {"ok": False, "error": "object item must be dict"}
+                if not isinstance(obj.get("oid"), str):
+                    return {"ok": False, "error": "object oid must be str"}
+                if mode == "write" and "value" not in obj:
+                    return {"ok": False, "error": "write object must include value"}
+            return self._handle_bench_fast_tx(mode=mode, objects=objects)
 
         if msg_type == MessageTypes.TX_WRITE:
             tid = request.get("tid")
@@ -604,7 +791,7 @@ class WalterSiteRuntime:
             target_site = request.get("target_site")
             if not isinstance(target_site, int):
                 return {"ok": False, "error": "target_site must be int"}
-            if target_site not in SITE_IDS:
+            if target_site not in self.active_site_ids:
                 return {"ok": False, "error": f"unknown target_site={target_site}"}
             peer_response = self.rpc_client.ping(from_site=self.site_id, to_site=target_site)
             return {

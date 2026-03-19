@@ -4,6 +4,7 @@ This module centralizes topology-related constants so transport and runtime
 layers can share one source of truth.
 """
 
+import os
 from dataclasses import dataclass
 
 SITE_IDS = [0, 1, 2, 3]
@@ -24,6 +25,31 @@ LATENCY_MATRIX_RTT = {
 	2: [0.087, 0.153, 0.000, 0.277],
 	3: [0.261, 0.190, 0.277, 0.000],
 }
+
+
+def get_active_site_ids() -> list[int]:
+	"""Resolve active sites for one experiment run.
+
+	By default, all configured sites are active. For scalability experiments,
+	set WALTER_ACTIVE_SITE_IDS as comma-separated integers, e.g. "0,1,2".
+	"""
+
+	raw = os.environ.get("WALTER_ACTIVE_SITE_IDS", "").strip()
+	if not raw:
+		return list(SITE_IDS)
+
+	active: list[int] = []
+	for token in raw.split(","):
+		item = token.strip()
+		if not item:
+			continue
+		if not item.isdigit():
+			continue
+		site_id = int(item)
+		if site_id in SITE_IDS and site_id not in active:
+			active.append(site_id)
+
+	return active if active else list(SITE_IDS)
 
 
 @dataclass

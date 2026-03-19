@@ -48,6 +48,11 @@ class MessageTypes:
     TX_PROPAGATE = "TX_PROPAGATE"
     TX_PROPAGATE_APPLIED = "TX_PROPAGATE_APPLIED"
     TX_PROPAGATE_QUEUED = "TX_PROPAGATE_QUEUED"
+    TX_READ_ONE_TX = "TX_READ_ONE_TX"
+    TX_WRITE_ONE_TX = "TX_WRITE_ONE_TX"
+    TX_BENCH_REGULAR_TX = "TX_BENCH_REGULAR_TX"
+    TX_BENCH_CSET_TX = "TX_BENCH_CSET_TX"
+    TX_BENCH_FAST_TX = "TX_BENCH_FAST_TX"
 
 
 class JsonCodec:
@@ -119,6 +124,74 @@ class RpcClient:
         return raw
 
 
+class PersistentRpcClient:
+    """Thread-safe RPC client with optional long-lived connection per target site."""
+
+    def __init__(self, timeout_seconds: float = 5.0):
+        self.timeout_seconds = timeout_seconds
+        self._conns: Dict[int, socket.socket] = {}
+        self._locks: Dict[int, threading.Lock] = {}
+
+    def close_all(self) -> None:
+        for conn in self._conns.values():
+            try:
+                conn.close()
+            except OSError:
+                pass
+        self._conns.clear()
+        self._locks.clear()
+
+    def _get_conn(self, to_site: int) -> socket.socket:
+        conn = self._conns.get(to_site)
+        if conn is not None:
+            return conn
+        address = get_site_address(to_site)
+        conn = socket.create_connection((address.host, address.port), timeout=self.timeout_seconds)
+        conn.settimeout(self.timeout_seconds)
+        self._conns[to_site] = conn
+        self._locks[to_site] = threading.Lock()
+        return conn
+
+    def send_request(
+        self,
+        to_site: int,
+        message: Dict[str, Any],
+        from_site: Optional[int] = None,
+        apply_delay: bool = True,
+    ) -> Dict[str, Any]:
+        if from_site is not None and apply_delay:
+            time.sleep(get_link_delay_seconds(from_site, to_site))
+
+        payload = dict(message)
+        if from_site is not None:
+            payload.setdefault("from_site", from_site)
+
+        conn = self._get_conn(to_site)
+        lock = self._locks[to_site]
+        with lock:
+            try:
+                conn.sendall(JsonCodec.encode(payload))
+                response_raw = RpcClient.read_until_newline(conn)
+            except OSError:
+                # Retry once with a fresh connection if peer closed/reset.
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                self._conns.pop(to_site, None)
+                self._locks.pop(to_site, None)
+                conn = self._get_conn(to_site)
+                lock = self._locks[to_site]
+                with lock:
+                    conn.sendall(JsonCodec.encode(payload))
+                    response_raw = RpcClient.read_until_newline(conn)
+
+        if not response_raw:
+            raise ConnectionError(f"empty response from site={to_site}")
+
+        return JsonCodec.decode(response_raw)
+
+
 class RpcServer:
     """Socket listener and request dispatcher for one site runtime."""
 
@@ -155,13 +228,17 @@ class RpcServer:
 
     def _handle_connection(self, conn: socket.socket) -> None:
         with conn:
-            try:
-                raw = RpcClient.read_until_newline(conn)
-                if not raw:
-                    return
-                request = JsonCodec.decode(raw)
-                response = self.handler(request)
-            except Exception as exc:  # noqa: BLE001
-                response = {"ok": False, "error": f"internal_error: {exc}"}
+            while self._running.is_set():
+                try:
+                    raw = RpcClient.read_until_newline(conn)
+                    if not raw:
+                        return
+                    request = JsonCodec.decode(raw)
+                    response = self.handler(request)
+                except Exception as exc:  # noqa: BLE001
+                    response = {"ok": False, "error": f"internal_error: {exc}"}
 
-            conn.sendall(JsonCodec.encode(response))
+                try:
+                    conn.sendall(JsonCodec.encode(response))
+                except OSError:
+                    return
