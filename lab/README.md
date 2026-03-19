@@ -48,3 +48,21 @@ Slow-commit (2PC) smoke test:
 ```bash
 python WalterSim/lab/scripts/run_slow_commit_smoke.py
 ```
+
+Async replication smoke test:
+
+```bash
+python WalterSim/lab/scripts/run_replication_smoke.py
+```
+
+Out-of-order propagation smoke test:
+
+```bash
+python WalterSim/lab/scripts/run_out_of_order_propagation_smoke.py
+```
+
+Cset conflict-free smoke test:
+
+```bash
+python WalterSim/lab/scripts/run_cset_smoke.py
+```

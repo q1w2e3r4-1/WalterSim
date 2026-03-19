@@ -72,11 +72,30 @@ class Transaction:
     def add_write(self, oid: str, payload: Any) -> None:
         self.updates.append(UpdateOp(oid=oid, op_type="WRITE", payload=payload))
 
+    def add_cset_add(self, oid: str, element_id: str) -> None:
+        self.updates.append(UpdateOp(oid=oid, op_type="CSET_ADD", payload={"element_id": element_id}))
+
+    def add_cset_del(self, oid: str, element_id: str) -> None:
+        self.updates.append(UpdateOp(oid=oid, op_type="CSET_DEL", payload={"element_id": element_id}))
+
     def get_buffered_write(self, oid: str) -> Optional[Any]:
         for op in reversed(self.updates):
             if op.op_type == "WRITE" and op.oid == oid:
                 return op.payload
         return None
+
+    def apply_buffered_cset_to_counts(self, oid: str, counts: Dict[str, int]) -> Dict[str, int]:
+        merged = dict(counts)
+        for op in self.updates:
+            if op.oid != oid:
+                continue
+            if op.op_type == "CSET_ADD":
+                element_id = str(op.payload.get("element_id"))
+                merged[element_id] = merged.get(element_id, 0) + 1
+            elif op.op_type == "CSET_DEL":
+                element_id = str(op.payload.get("element_id"))
+                merged[element_id] = merged.get(element_id, 0) - 1
+        return merged
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -133,7 +152,29 @@ class CsetStore:
     - Materialize visible members where count > 0.
     """
 
-    # TODO: Implement apply_add/apply_del/read_members methods.
+    def __init__(self):
+        self.csets: Dict[str, Dict[str, int]] = {}
+
+    def _ensure(self, oid: str) -> Dict[str, int]:
+        return self.csets.setdefault(oid, {})
+
+    def apply_add(self, oid: str, element_id: str) -> None:
+        bucket = self._ensure(oid)
+        bucket[element_id] = bucket.get(element_id, 0) + 1
+
+    def apply_del(self, oid: str, element_id: str) -> None:
+        bucket = self._ensure(oid)
+        bucket[element_id] = bucket.get(element_id, 0) - 1
+
+    def get_counts(self, oid: str) -> Dict[str, int]:
+        return dict(self.csets.get(oid, {}))
+
+    def read_members(self, oid: str) -> List[str]:
+        bucket = self.csets.get(oid, {})
+        return sorted([element_id for element_id, count in bucket.items() if count > 0])
+
+    def read_members_from_counts(self, counts: Dict[str, int]) -> List[str]:
+        return sorted([element_id for element_id, count in counts.items() if count > 0])
 
 
 class LockTable:
