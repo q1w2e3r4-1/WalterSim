@@ -6,7 +6,9 @@ health checks and mesh ping tests.
 
 from __future__ import annotations
 
+import os
 import queue
+import random
 import threading
 import time
 from typing import Any, Dict, List
@@ -23,6 +25,10 @@ class WalterSiteRuntime:
         self.site_id = site_id
         self.site_name = SITE_NAMES[site_id]
         self.active_site_ids = get_active_site_ids()
+        self.read_base_ms = max(0.0, float(os.environ.get("WALTER_BENCH_LOCAL_READ_BASE_MS", "0.0")))
+        self.write_base_ms = max(0.0, float(os.environ.get("WALTER_BENCH_LOCAL_WRITE_BASE_MS", "0.0")))
+        self.cache_miss_ratio = min(1.0, max(0.0, float(os.environ.get("WALTER_BENCH_CACHE_MISS_RATIO", "0.0"))))
+        self.cache_miss_penalty_ms = max(0.0, float(os.environ.get("WALTER_BENCH_CACHE_MISS_PENALTY_MS", "0.0")))
         self.address = get_site_address(site_id)
         self.rpc_client = RpcClient()
         self.clock = SiteClock(site_id=site_id)
@@ -447,6 +453,21 @@ class WalterSiteRuntime:
 
     def _handle_bench_fast_tx(self, mode: str, objects: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Benchmark-only path for one-RPC read/write tx with 1 or 5 objects."""
+
+        object_count = len(objects)
+        delay_ms = 0.0
+        if mode == "read":
+            delay_ms += self.read_base_ms
+        elif mode == "write":
+            delay_ms += self.write_base_ms
+
+        if self.cache_miss_ratio > 0.0 and self.cache_miss_penalty_ms > 0.0:
+            misses = sum(1 for _ in range(object_count) if random.random() < self.cache_miss_ratio)
+            delay_ms += misses * self.cache_miss_penalty_ms
+
+        if delay_ms > 0.0:
+            for _ in range(object_count):
+                time.sleep(delay_ms / 1000.0)
 
         if mode == "read":
             with self._state_lock:

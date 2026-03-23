@@ -1,0 +1,3 @@
+workload,ok_count,total,throughput_tx_s,avg_ms,p50_ms,p95_ms,p99_ms,modes,elapsed_s,keys,tx,concurrency,persistent,single_rpc
+read,2000,2000,35194.465280,0.023850,0.019350,0.020995,0.042910,{'FAST': 2000},0.056827,10000,2000,1,True,True
+write,2000,2000,30983.710457,0.027421,0.023997,0.026714,0.033113,{'FAST': 2000},0.064550,10000,2000,1,True,True

@@ -34,37 +34,37 @@ python scripts/run_cluster.py
 Minimal transaction smoke test:
 
 ```bash
-python WalterSim/lab/scripts/run_tx_smoke.py
+python WalterSim/lab/scripts/smoke/run_tx_smoke.py
 ```
 
 Fast-commit conflict smoke test:
 
 ```bash
-python WalterSim/lab/scripts/run_fast_commit_conflict_smoke.py
+python WalterSim/lab/scripts/smoke/run_fast_commit_conflict_smoke.py
 ```
 
 Slow-commit (2PC) smoke test:
 
 ```bash
-python WalterSim/lab/scripts/run_slow_commit_smoke.py
+python WalterSim/lab/scripts/smoke/run_slow_commit_smoke.py
 ```
 
 Async replication smoke test:
 
 ```bash
-python WalterSim/lab/scripts/run_replication_smoke.py
+python WalterSim/lab/scripts/smoke/run_replication_smoke.py
 ```
 
 Out-of-order propagation smoke test:
 
 ```bash
-python WalterSim/lab/scripts/run_out_of_order_propagation_smoke.py
+python WalterSim/lab/scripts/smoke/run_out_of_order_propagation_smoke.py
 ```
 
 Cset conflict-free smoke test:
 
 ```bash
-python WalterSim/lab/scripts/run_cset_smoke.py
+python WalterSim/lab/scripts/smoke/run_cset_smoke.py
 ```
 
 Cset vs Regular small benchmark:
@@ -83,11 +83,43 @@ Results:
 1. Baseline read/write benchmark:
 
 ```bash
-python WalterSim/lab/scripts/run_baseline_rw_benchmark.py --keys 50000 --tx 5000 --concurrency 8 --persistent --single-rpc
+python WalterSim/lab/scripts/run_baseline_rw_benchmark.py --keys 10000 --tx 2000 --concurrency 1 --persistent --single-rpc
 ```
 Results:
 
 ```
-[read] ok=5000/5000 throughput=39839.90 tx/s avg=0.18ms p50=0.14ms p95=0.35ms p99=0.61ms modes={'FAST': 5000} persistent=True single_rpc=True
-[write] ok=5000/5000 throughput=39250.43 tx/s avg=0.19ms p50=0.15ms p95=0.38ms p99=0.57ms modes={'FAST': 5000} persistent=True single_rpc=True
+[read] ok=2000/2000 throughput=35194.47 tx/s avg=0.02ms p50=0.02ms p95=0.02ms p99=0.04ms modes={'FAST': 2000} persistent=True single_rpc=True
+[write] ok=2000/2000 throughput=30983.71 tx/s avg=0.03ms p50=0.02ms p95=0.03ms p99=0.03ms modes={'FAST': 2000} persistent=True single_rpc=True
+```
+
+2. Fast Commit benchmark
+```bash
+python WalterSim/lab/scripts/run_fast_commit_experiment.py --tx-per-site 2000 --concurrency-per-site 1 --keys-per-site 10000 --read-base-ms 0.01 --write-base-ms 0.02 --cache-miss-ratio 0 --cache-miss-penalty-ms 0.40
+
+python WalterSim/lab/scripts/plot_fast_commit_scalability.py \
+  --input WalterSim/lab/experiments/results/csv/fast_commit_scalability.csv \
+  --output-dir WalterSim/lab/experiments/results/png
+```
+
+3. Fast-commit latency CDF (single site):
+
+```bash
+python WalterSim/lab/scripts/run_fast_commit_latency_cdf.py \
+  --tx-count 20000 \
+  --warmup 1000 \
+  --concurrency 1 \
+  --write-objects-per-tx 5 \
+  --keys 10000 \
+  --read-base-ms 0.01 \
+  --write-base-ms 0.02 \
+  --cache-miss-ratio 0 \
+  --cache-miss-penalty-ms 0.40
+```
+
+Results:
+
+```text
+WalterSim/lab/experiments/results/csv/fast_commit_latency_cdf_raw.csv
+WalterSim/lab/experiments/results/csv/fast_commit_latency_cdf_points.csv
+WalterSim/lab/experiments/results/png/fast_commit_latency_cdf.png
 ```

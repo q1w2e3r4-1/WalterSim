@@ -3,7 +3,7 @@
 from pathlib import Path
 import sys
 
-LAB_ROOT = Path(__file__).resolve().parent.parent
+LAB_ROOT = Path(__file__).resolve().parent.parent.parent
 SITE_DIR = LAB_ROOT / "site"
 if str(LAB_ROOT) not in sys.path:
     sys.path.insert(0, str(LAB_ROOT))

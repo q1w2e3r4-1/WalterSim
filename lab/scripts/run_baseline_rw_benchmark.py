@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple
 
 LAB_ROOT = Path(__file__).resolve().parent.parent
 SITE_DIR = LAB_ROOT / "site"
-RESULT_DIR = LAB_ROOT / "experiments" / "results"
+RESULT_DIR = LAB_ROOT / "experiments" / "results" / "csv"
 if str(LAB_ROOT) not in sys.path:
     sys.path.insert(0, str(LAB_ROOT))
 if str(SITE_DIR) not in sys.path:
