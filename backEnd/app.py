@@ -20,12 +20,14 @@ class Backend:
         @app.route("/flush")
         def flush():
             myHistory, otherHistory = db_server.get_local_history()
+            new_logs = db_server.get_new_logs()
             return {
                 "myHistory":    myHistory,
                 "otherHistory": otherHistory,
                 "currentSeqNo": db_server.currentSeqNo,
                 "CommittedVTS": db_server.committedVTS,
                 "GotVTS":       db_server.gotVTS,
+                "logs":         new_logs,
             }
 
         # 通过本接口处理一个事务，事务内容通过 POST 提交

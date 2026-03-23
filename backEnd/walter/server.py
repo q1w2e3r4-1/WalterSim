@@ -21,12 +21,47 @@ class Server:
         self.object_locks       = {}                         # 慢提交对象锁 {oid: tid}
         self.object_locks_mutex = threading.Lock()           # 保护 object_locks
 
+        # 日志系统：保存最近的日志，支持增量获取
+        self.logs               = []                         # 完整日志列表
+        self.log_index          = 0                          # 已读日志指针（用于增量发送）
+        self.logs_mutex         = threading.Lock()           # 保护日志操作
+        self.propagate_log_queue = multiprocessing.Queue()   # 子进程日志回传队列
+        self._propagate_log_thread = threading.Thread(
+            target=self._consume_propagate_logs,
+            daemon=True
+        )
+        self._propagate_log_thread.start()
+
         self.name_to_id = {
             "Alice": "ssA01",
             "Bob":   "ssB01",
             "Eva":   "flEve",
         }
     # ──────────────── 内部辅助 ──────────────────────────────────────────── #
+
+    def log(self, message: str):
+        """记录日志信息（线程安全）"""
+        print(message)
+        with self.logs_mutex:
+            self.logs.append(message)
+
+    def _consume_propagate_logs(self):
+        """消费传播子进程日志并写入 server 日志缓冲"""
+        while True:
+            try:
+                msg = self.propagate_log_queue.get()
+                if msg is None:
+                    continue
+                self.log(str(msg))
+            except Exception:
+                continue
+
+    def get_new_logs(self) -> list:
+        """获取从上次读取后的新增日志，并更新读取指针"""
+        with self.logs_mutex:
+            new_logs = self.logs[self.log_index:]
+            self.log_index = len(self.logs)
+            return new_logs
 
     def _get_site_url(self, site_id: int) -> str:
         """返回指定站点的 HTTP base URL"""
@@ -169,7 +204,7 @@ class Server:
         for his in self.history[oid]:
             his_ID, seq = his[1]
             if VTS[his_ID] < seq:
-                print("对象被修改过，当前VTS:", VTS, "在此之后的修改记录：", his)
+                self.log("对象被修改过，当前VTS: {}, 在此之后的修改记录: {}".format(VTS, his))
                 return False
         return True
 
@@ -200,56 +235,74 @@ class Server:
 
     def fastCommit(self, x: Transaction):
         """快提交（写集合全在本地首选站点）"""
-        print("\n  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[线程] 快提交━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓")
-        print("  ┃ ", x)
+        msg = "\n  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[线程] 快提交━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+        self.log(msg)
+        msg = "  ┃  " + str(x)
+        self.log(msg)
 
         self.thread_lock.acquire()
         for oid in x.writeset.keys():
             if not self.unmodified(oid, x.startVTS) or oid in self.object_locks:
                 self.thread_lock.release()
-                print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━× ABORTED！━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n")
+                msg = "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━× ABORTED！━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+                self.log(msg)
                 x.outcome = "ABORTED"
                 return x.outcome
 
-        print("  ┃ ▶ 开始更新History     ", end="")
+        msg = "  ┃ ▶ 开始更新History"
+        self.log(msg)
         self.currentSeqNo += 1
         x.seqno = self.currentSeqNo
         self.update(x.updates, (self.siteID, x.seqno))
-        print("  ┃ ☑ 更新结束")
+        msg = "  ┃ ☑ 更新结束"
+        self.log(msg)
         self.thread_lock.release()
 
-        print("  ┃ ▶ 等待提交排序        ", end="")
+        msg = "  ┃ ▶ 等待提交排序"
+        self.log(msg)
         while self.committedVTS[self.siteID] < x.seqno - 1:
             time.sleep(0.2)
         self.committedVTS[self.siteID] = x.seqno
-        print("  ┃ ☑ 提交结束")
+        msg = "  ┃ ☑ 提交结束"
+        self.log(msg)
 
         x.outcome = "COMMITTED"
-        print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━√ COMMITTED！━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n")
+        msg = "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━√ COMMITTED！━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+        self.log(msg)
 
         p = multiprocessing.Process(
             target=_propagate_worker,
-            args=(self._get_other_site_ids(), self._build_site_url_map(), self.siteID, _tx_to_dict(x))
+            args=(
+                self._get_other_site_ids(),
+                self._build_site_url_map(),
+                self.siteID,
+                _tx_to_dict(x),
+                self.propagate_log_queue
+            )
         )
         p.start()
         return x.outcome
 
     def slowCommit(self, x: Transaction):
         """慢提交（写集合中有非本站点首选的对象）"""
-        print("\n  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[线程] 慢提交━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓")
-        print("  ┃ ", x)
+        msg = "\n  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[线程] 慢提交━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+        self.log(msg)
+        msg = "  ┃  " + str(x)
+        self.log(msg)
 
         # 按首选站点分组写对象
         sites = {}
         for oid in x.writeset.keys():
             pref = self.config_client.get_preferred_site(oid)
             sites.setdefault(pref, []).append(oid)
-        print("  ┃   要写入的站点：", sites)
+        msg = "  ┃   要写入的站点：" + str(sites)
+        self.log(msg)
 
         # 各站点投票
         votes = {}
         for site, oids in sites.items():
-            print("  ┃▲  请求投票 {} 站点:{}".format(oids, site))
+            msg = "  ┃▲  请求投票 {} 站点:{}".format(oids, site)
+            self.log(msg)
             if site != self.siteID:
                 serverUrl = self._get_site_url(site)
                 res  = requests.post(serverUrl + "/prepare", json={
@@ -261,46 +314,64 @@ class Server:
                 retList = []
                 self.prepare_lock(x.tid, oids, x.startVTS, retList)
                 vote = "YES" if retList[0] else "NO"
-            print("  ┃    ▷", vote)
+            msg = "  ┃    ▷ " + str(vote)
+            self.log(msg)
             votes[site] = (vote == "YES")
-        print("  ┃   ★ 投票结果", votes)
+        msg = "  ┃   ★ 投票结果 " + str(votes)
+        self.log(msg)
 
         if all(votes.values()):
             self.thread_lock.acquire()
-            print("  ┃ ▶ 开始更新History    ", end="")
+            msg = "  ┃ ▶ 开始更新History"
+            self.log(msg)
             self.currentSeqNo += 1
             x.seqno = self.currentSeqNo
             self.update(x.updates, (self.siteID, x.seqno))
-            print("  ┃ ☑ 更新结束")
+            msg = "  ┃ ☑ 更新结束"
+            self.log(msg)
             self.thread_lock.release()
 
-            print("  ┃ ▶ 等待提交排序        ", end="")
+            msg = "  ┃ ▶ 等待提交排序"
+            self.log(msg)
             while self.committedVTS[self.siteID] < x.seqno - 1:
                 time.sleep(0.2)
             self.committedVTS[self.siteID] = x.seqno
-            print("  ┃ ☑ 等待结束")
+            msg = "  ┃ ☑ 等待结束"
+            self.log(msg)
 
-            print("  ┃ ▶ 释放本地加锁        ", end="")
+            msg = "  ┃ ▶ 释放本地加锁"
+            self.log(msg)
             self.abort_unlock(x.tid)
-            print("  ┃ ☑ 释放结束")
+            msg = "  ┃ ☑ 释放结束"
+            self.log(msg)
 
             x.outcome = "COMMITTED"
-            print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━√ COMMITTED！━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n")
+            msg = "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━√ COMMITTED！━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+            self.log(msg)
 
             p = multiprocessing.Process(
                 target=_propagate_worker,
-                args=(self._get_other_site_ids(), self._build_site_url_map(), self.siteID, _tx_to_dict(x))
+                args=(
+                    self._get_other_site_ids(),
+                    self._build_site_url_map(),
+                    self.siteID,
+                    _tx_to_dict(x),
+                    self.propagate_log_queue
+                )
             )
             p.start()
             return x.outcome
         else:
-            print("  ┃ ▶ 解锁            ", end="")
+            msg = "  ┃ ▶ 解锁"
+            self.log(msg)
             for site, voted_yes in votes.items():
                 if voted_yes and site != self.siteID:
                     serverUrl = self._get_site_url(site)
                     requests.post(serverUrl + "/abort", json={"tid": x.tid, "id": self.siteID})
-            print("  ┃ ☑ 释放结束")
-            print("  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━× ABORTED！━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n")
+            msg = "  ┃ ☑ 释放结束"
+            self.log(msg)
+            msg = "  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━× ABORTED！━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+            self.log(msg)
             x.outcome = "ABORTED"
             return x.outcome
 
@@ -311,23 +382,29 @@ class Server:
             if upd[0] == 'WRITE':
                 x.writeset[upd[1]] = upd
 
-        print("[3.1] ---------获得写集合---------")
-        print(x.writeset)
+        msg = "[3.1] ---------获得写集合---------"
+        self.log(msg)
+        msg = str(x.writeset)
+        self.log(msg)
 
         for oid in x.writeset.keys():
             if self.config_client.get_preferred_site(oid) != self.siteID:
-                print("[3.2] ---------慢提交--------------")
+                msg = "[3.2] ---------慢提交--------------"
+                self.log(msg)
                 com = threading.Thread(target=self.slowCommit, args=(x,))
                 com.start()
                 com.join()
-                print("==================================[事务 {}]======================================\n\n".format(x.outcome))
+                msg = "==================================[事务 {}]======================================".format(x.outcome)
+                self.log(msg)
                 return
 
-        print("[3.2] ---------快提交--------------")
+        msg = "[3.2] ---------快提交--------------"
+        self.log(msg)
         com = threading.Thread(target=self.fastCommit, args=(x,))
         com.start()
         com.join()
-        print("==================================[事务 {}]======================================\n\n".format(x.outcome))
+        msg = "==================================[事务 {}]======================================".format(x.outcome)
+        self.log(msg)
 
     # ──────────────── history 处理 ──────────────────────────────────────── #
 
@@ -370,41 +447,48 @@ def _tx_to_dict(x: Transaction) -> dict:
 PROPAGATE_DELAY = 10  # 站点间异步传播延迟（秒），用于模拟长分叉场景
 
 
-def _propagate_worker(other_site_ids: list, site_url_map: dict, my_site_id: int, x_dict: dict):
+def _worker_log(log_queue, message: str):
+    try:
+        log_queue.put(str(message))
+    except Exception:
+        pass
+
+
+def _propagate_worker(other_site_ids: list, site_url_map: dict, my_site_id: int, x_dict: dict, log_queue):
     """
     在独立进程中执行传播逻辑。
     不依赖 self，所有数据通过参数传入。
     """
-    print("╭────────────────────────────────[进程] 同步传播─────────────────────────────────────╮")
-    print("│ ", x_dict)
-    print("│ ⏱  等待 {}s 后开始传播...".format(PROPAGATE_DELAY))
+    _worker_log(log_queue, "╭────────────────────────────────[进程] 同步传播─────────────────────────────────────╮")
+    _worker_log(log_queue, "│ " + str(x_dict))
+    _worker_log(log_queue, "│ ⏱  正在传播中...")
     time.sleep(PROPAGATE_DELAY)
-    print("│ --------------------------------------1. 传播--------------------------------------------------------")
+    _worker_log(log_queue, "│ --------------------------------------1. 传播--------------------------------------------------------")
     for sid in other_site_ids:
         serverUrl = site_url_map[sid]
-        print("│▲  同步到 站点 {} URL:{}".format(sid, serverUrl))
+        _worker_log(log_queue, "│▲  同步到 站点 {} URL:{}".format(sid, serverUrl))
         try:
             res = requests.post(serverUrl + "/propagate", json={"x": x_dict, "id": my_site_id})
-            print("|    ▷", res.text.replace("\n", ""))
+            _worker_log(log_queue, "|    ▷ " + res.text.replace("\n", ""))
             if json.loads(res.text).get("status") == "ERROR":
-                print("╰─────────────────────────────────────────────────────────────────────────────────────╯")
+                _worker_log(log_queue, "╰─────────────────────────────────────────────────────────────────────────────────────╯")
                 return
         except Exception as e:
-            print("|    ▷ 连接失败:", e)
+            _worker_log(log_queue, "|    ▷ 连接失败: {}".format(e))
             return
 
-    print("| ♢事务现在 是 disaster-safe durable")
+    _worker_log(log_queue, "| ♢事务现在 是 disaster-safe durable")
     x_dict['mark'] = "disaster-safe durable"
-    print("│ ---------------------------------------2. 灾难安全备份------------------------------------------------")
+    _worker_log(log_queue, "│ ---------------------------------------2. 灾难安全备份------------------------------------------------")
     for sid in other_site_ids:
         serverUrl = site_url_map[sid]
-        print("│▲  同步到 站点 {} URL:{}".format(sid, serverUrl))
+        _worker_log(log_queue, "│▲  同步到 站点 {} URL:{}".format(sid, serverUrl))
         try:
             res = requests.post(serverUrl + "/ds_durable", json={"x": x_dict, "id": my_site_id})
-            print("|    ▷", res.text.replace("\n", ""))
+            _worker_log(log_queue, "|    ▷ " + res.text.replace("\n", ""))
         except Exception as e:
-            print("|    ▷ 连接失败:", e)
+            _worker_log(log_queue, "|    ▷ 连接失败: {}".format(e))
 
-    print("| ♢事务现在 是 globally visible")
+    _worker_log(log_queue, "| ♢事务现在 是 globally visible")
     x_dict['mark'] = "globally visible"
-    print("╰─────────────────────────────────────────────────────────────────────────────────────╯")
+    _worker_log(log_queue, "╰─────────────────────────────────────────────────────────────────────────────────────╯")

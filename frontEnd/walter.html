@@ -60,6 +60,12 @@
                             </el-collapse-item>
                           </el-collapse>
                     </div>
+                    <el-divider><i class="el-icon-view"></i> Server Logs</el-divider>
+                    <div class="text item" style="padding-top: 10px; padding-bottom: 10px;">
+                        <div id="site00-logs" style="border: 1px solid #DCDFE6; border-radius: 4px; padding: 10px; font-family: monospace; font-size: 12px; height: 200px; overflow-y: auto; background-color: #f5f7fa; color: #333;">
+                            <div v-for="(log, idx) in site00.logs" :key="idx" style="margin-bottom: 4px; white-space: pre-wrap; word-break: break-all;">{{log}}</div>
+                        </div>
+                    </div>
                 </el-card>
             </el-col>
             <el-col :span="10">
@@ -90,6 +96,12 @@
                                 <li v-for="his in value">{{his}}</li>
                             </el-collapse-item>
                           </el-collapse>
+                    </div>
+                    <el-divider><i class="el-icon-view"></i> Server Logs</el-divider>
+                    <div class="text item" style="padding-top: 10px; padding-bottom: 10px;">
+                        <div id="site01-logs" style="border: 1px solid #DCDFE6; border-radius: 4px; padding: 10px; font-family: monospace; font-size: 12px; height: 200px; overflow-y: auto; background-color: #f5f7fa; color: #333;">
+                            <div v-for="(log, idx) in site01.logs" :key="idx" style="margin-bottom: 4px; white-space: pre-wrap; word-break: break-all;">{{log}}</div>
+                        </div>
                     </div>
                 </el-card>
             </el-col>
@@ -266,8 +278,8 @@
     new Vue({
         el: '#app',
         data:{
-            site00:{},
-            site01:{},
+            site00:{logs:[]},
+            site01:{logs:[]},
             //定时器id
             autoTimer:null,
             //AliceT2的执行延时
@@ -318,7 +330,20 @@
                     var vm=this;
                     axios.get('http://127.0.0.1:5000/flush')
                         .then(function(res){
-                            vm.site00=res.data
+                            vm.site00.myHistory = res.data.myHistory;
+                            vm.site00.otherHistory = res.data.otherHistory;
+                            vm.site00.currentSeqNo = res.data.currentSeqNo;
+                            vm.site00.CommittedVTS = res.data.CommittedVTS;
+                            vm.site00.GotVTS = res.data.GotVTS;
+                            // 增量添加日志
+                            if (res.data.logs && res.data.logs.length > 0) {
+                                vm.site00.logs = vm.site00.logs.concat(res.data.logs);
+                                // 异步滚动到底部
+                                vm.$nextTick(function(){
+                                    var logsDiv = document.getElementById('site00-logs');
+                                    if (logsDiv) logsDiv.scrollTop = logsDiv.scrollHeight;
+                                });
+                            }
                         })
                         .catch(function(erroe){
                             console.log("请求API失败")
@@ -330,7 +355,20 @@
                     var vm=this;
                     axios.get('http://127.0.0.1:5001/flush')
                         .then(function(res){
-                            vm.site01=res.data
+                            vm.site01.myHistory = res.data.myHistory;
+                            vm.site01.otherHistory = res.data.otherHistory;
+                            vm.site01.currentSeqNo = res.data.currentSeqNo;
+                            vm.site01.CommittedVTS = res.data.CommittedVTS;
+                            vm.site01.GotVTS = res.data.GotVTS;
+                            // 增量添加日志
+                            if (res.data.logs && res.data.logs.length > 0) {
+                                vm.site01.logs = vm.site01.logs.concat(res.data.logs);
+                                // 异步滚动到底部
+                                vm.$nextTick(function(){
+                                    var logsDiv = document.getElementById('site01-logs');
+                                    if (logsDiv) logsDiv.scrollTop = logsDiv.scrollHeight;
+                                });
+                            }
                         })
                         .catch(function(erroe){
                             console.log("请求API失败")
