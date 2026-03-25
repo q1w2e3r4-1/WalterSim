@@ -123,3 +123,25 @@ WalterSim/lab/experiments/results/csv/fast_commit_latency_cdf_raw.csv
 WalterSim/lab/experiments/results/csv/fast_commit_latency_cdf_points.csv
 WalterSim/lab/experiments/results/png/fast_commit_latency_cdf.png
 ```
+
+4. Disaster-safe latency CDF (Fast Commit, 2 to 4 sites):
+
+```bash
+python WalterSim/lab/scripts/run_disaster_safe_cdf_experiment.py \
+  --tx-per-setup 1000 \
+  --warmup 200 \
+  --concurrency 16 \
+  --submit-interval-ms 30 \
+  --write-objects-per-tx 1 \
+  --propagate-batch-interval-ms 50 \
+  --propagate-batch-max-txs 8 \
+  --keys-per-site 10000
+```
+
+Outputs:
+
+```text
+WalterSim/lab/experiments/results/csv/disaster_safe_fast_commit_samples.csv
+WalterSim/lab/experiments/results/csv/disaster_safe_fast_commit_summary.csv
+WalterSim/lab/experiments/results/png/disaster_safe_fast_commit_cdf.png
+```

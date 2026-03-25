@@ -11,7 +11,8 @@ import queue
 import random
 import threading
 import time
-from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional, Set
 
 from core.config import SITE_IDS, SITE_NAMES, get_active_site_ids, get_link_delay_seconds, get_preferred_site, get_site_address
 from core.types_store import CsetStore, SiteClock, Transaction, VectorTimestamp, Version, VersionedObjectStore
@@ -39,9 +40,19 @@ class WalterSiteRuntime:
         self.key_locks: Dict[str, str] = {}
         self.got_vts: Dict[int, int] = {sid: 0 for sid in self.active_site_ids}
         self.pending_propagations: List[Dict[str, Any]] = []
+        self.propagate_batch_interval_ms = max(
+            0.0,
+            float(os.environ.get("WALTER_PROPAGATE_BATCH_INTERVAL_MS", "20.0")),
+        )
+        self.propagate_batch_max_txs = max(
+            1,
+            int(os.environ.get("WALTER_PROPAGATE_BATCH_MAX_TXS", "128")),
+        )
         self._next_tid = 1
+        self._next_durability_token = 1
         self._state_lock = threading.Lock()
         self._propagation_queue: queue.Queue[Dict[str, Any] | None] = queue.Queue()
+        self._durability_pending: Dict[int, Dict[str, Any]] = {}
         self._propagation_stop = threading.Event()
         self._propagation_worker = threading.Thread(target=self._propagation_loop, daemon=True)
         self._propagation_worker.start()
@@ -65,21 +76,134 @@ class WalterSiteRuntime:
 
     def _propagation_loop(self) -> None:
         while not self._propagation_stop.is_set():
-            payload = self._propagation_queue.get()
-            if payload is None:
+            try:
+                first = self._propagation_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if first is None:
                 return
-            for site_id in self.active_site_ids:
-                if site_id == self.site_id:
+
+            batch_items: List[Dict[str, Any]] = [first]
+            interval_s = self.propagate_batch_interval_ms / 1000.0
+            if interval_s > 0.0:
+                deadline = time.perf_counter() + interval_s
+                while len(batch_items) < self.propagate_batch_max_txs:
+                    remaining = deadline - time.perf_counter()
+                    if remaining <= 0.0:
+                        break
+                    try:
+                        item = self._propagation_queue.get(timeout=remaining)
+                    except queue.Empty:
+                        break
+                    if item is None:
+                        return
+                    batch_items.append(item)
+            print("!!!", len(batch_items))
+            self._flush_propagation_batch(batch_items)
+
+    def _enqueue_propagation(self, payload: Dict[str, Any], token: Optional[int] = None) -> None:
+        self._propagation_queue.put({"payload": payload, "token": token})
+
+    def _flush_propagation_batch(self, batch_items: List[Dict[str, Any]]) -> None:
+        if not batch_items:
+            return
+
+        remote_sites = [sid for sid in self.active_site_ids if sid != self.site_id]
+        if not remote_sites:
+            for item in batch_items:
+                token = item.get("token")
+                if token is None:
                     continue
-                try:
-                    self.rpc_client.send_request(
-                        to_site=site_id,
-                        message=payload,
-                        from_site=self.site_id,
-                        apply_delay=True,
+                with self._state_lock:
+                    pending = self._durability_pending.get(int(token))
+                    if pending is None:
+                        continue
+                    pending["disaster_safe_ms"] = 0.0
+                    pending["event"].set()
+            return
+
+        entries = [item["payload"] for item in batch_items]
+
+        def _send_batch(site_id: int) -> Dict[str, Any]:
+            started = time.perf_counter()
+            try:
+                resp = self.rpc_client.send_request(
+                    to_site=site_id,
+                    message={"type": MessageTypes.TX_PROPAGATE_BATCH, "entries": entries},
+                    from_site=self.site_id,
+                    apply_delay=True,
+                )
+                finished = time.perf_counter()
+                results = resp.get("results", []) if isinstance(resp.get("results"), list) else []
+                accepted_indices: Set[int] = set()
+                for idx, result in enumerate(results):
+                    if not isinstance(result, dict):
+                        continue
+                    if bool(result.get("ok")) and result.get("type") in {
+                        MessageTypes.TX_PROPAGATE_APPLIED,
+                        MessageTypes.TX_PROPAGATE_QUEUED,
+                    }:
+                        accepted_indices.add(idx)
+                return {
+                    "site_id": site_id,
+                    "ok": bool(resp.get("ok")),
+                    "accepted_indices": accepted_indices,
+                    "latency_ms": (finished - started) * 1000.0,
+                    "finished_ts": finished,
+                }
+            except Exception as exc:  # noqa: BLE001
+                finished = time.perf_counter()
+                return {
+                    "site_id": site_id,
+                    "ok": False,
+                    "accepted_indices": set(),
+                    "latency_ms": (finished - started) * 1000.0,
+                    "finished_ts": finished,
+                    "error": str(exc),
+                }
+
+        site_results: List[Dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=len(remote_sites)) as pool:
+            futures = [pool.submit(_send_batch, sid) for sid in remote_sites]
+            for fut in as_completed(futures):
+                site_results.append(fut.result())
+
+        for idx, item in enumerate(batch_items):
+            token = item.get("token")
+            if token is None:
+                continue
+
+            token_int = int(token)
+            should_retry = False
+            with self._state_lock:
+                pending = self._durability_pending.get(token_int)
+                if pending is None:
+                    continue
+
+                for site_result in site_results:
+                    site_id = int(site_result["site_id"])
+                    accepted = idx in site_result["accepted_indices"]
+                    if accepted and site_id not in pending["acked_ts_by_site"]:
+                        pending["acked_ts_by_site"][site_id] = float(site_result["finished_ts"])
+                    pending["ack_details"].append(
+                        {
+                            "site_id": site_id,
+                            "ok": bool(accepted),
+                            "latency_ms": float(site_result["latency_ms"]),
+                            "error": site_result.get("error"),
+                        }
                     )
-                except Exception:
-                    pass
+
+                if pending["required_sites"].issubset(set(pending["acked_ts_by_site"].keys())):
+                    done_ts = max(pending["acked_ts_by_site"][sid] for sid in pending["required_sites"])
+                    pending["disaster_safe_ms"] = (done_ts - pending["start_ts"]) * 1000.0
+                    pending["event"].set()
+                else:
+                    should_retry = True
+
+            if should_retry and not self._propagation_stop.is_set():
+                self._propagation_queue.put(item)
 
     def _release_locks(self, txid: str) -> None:
         locked_oids = [oid for oid, owner in self.key_locks.items() if owner == txid]
@@ -162,7 +286,132 @@ class WalterSiteRuntime:
             "start_vts": start_snapshot.to_dict(),
             "writes": list(writes),
         }
-        self._propagation_queue.put(payload)
+        self._enqueue_propagation(payload=payload)
+
+    def _wait_disaster_safe_acks(
+        self,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Wait for propagation receive-acks from remotes.
+
+        In this simplified model, a remote site returning either
+        TX_PROPAGATE_APPLIED or TX_PROPAGATE_QUEUED counts as durable receive.
+        """
+
+        remote_sites = [sid for sid in self.active_site_ids if sid != self.site_id]
+        required = len(remote_sites)
+        if required == 0:
+            return {
+                "required_remote_acks": 0,
+                "received_remote_acks": 0,
+                "disaster_safe_ms": 0.0,
+                "acked_sites": [],
+                "ack_details": [],
+            }
+
+        started = time.perf_counter()
+        done_event = threading.Event()
+        with self._state_lock:
+            token = self._next_durability_token
+            self._next_durability_token += 1
+            self._durability_pending[token] = {
+                "start_ts": started,
+                "required_sites": set(remote_sites),
+                "acked_ts_by_site": {},
+                "disaster_safe_ms": float("inf"),
+                "ack_details": [],
+                "event": done_event,
+            }
+
+        self._enqueue_propagation(payload=payload, token=token)
+
+        wait_timeout_s = max(2.0, self.rpc_client.timeout_seconds * 8.0)
+        done_event.wait(wait_timeout_s)
+
+        with self._state_lock:
+            pending = self._durability_pending.pop(token, None)
+
+        if pending is None:
+            return {
+                "required_remote_acks": required,
+                "received_remote_acks": 0,
+                "disaster_safe_ms": float("inf"),
+                "acked_sites": [],
+                "ack_details": [],
+            }
+
+        acked_sites = sorted(int(sid) for sid in pending["acked_ts_by_site"].keys())
+        return {
+            "required_remote_acks": required,
+            "received_remote_acks": len(acked_sites),
+            "disaster_safe_ms": float(pending["disaster_safe_ms"]),
+            "acked_sites": acked_sites,
+            "ack_details": list(pending["ack_details"]),
+        }
+
+    def _handle_bench_fast_durability_tx(
+        self,
+        objects: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Benchmark-only path: local fast commit + wait disaster-safe receive-acks."""
+
+        with self._state_lock:
+            tid = self._allocate_tid_locked()
+            tx = Transaction(tid=tid, start_vts=self.clock.current_snapshot())
+            for item in objects:
+                oid = str(item["oid"])
+                payload = item.get("value")
+                tx.add_write(oid=oid, payload=payload)
+
+            touched_sites = {get_preferred_site(op.oid, default_site_id=self.site_id) for op in tx.updates}
+            if not touched_sites.issubset({self.site_id}):
+                return {
+                    "ok": False,
+                    "type": MessageTypes.TX_COMMIT_ABORT,
+                    "reason": "non_fast_writeset",
+                }
+
+            write_oids = {op.oid for op in tx.updates if op.op_type == "WRITE"}
+            for oid in write_oids:
+                owner = self.key_locks.get(oid)
+                if owner is not None:
+                    return {
+                        "ok": False,
+                        "type": MessageTypes.TX_COMMIT_ABORT,
+                        "reason": f"locked_key={oid}",
+                    }
+                if self.store.was_modified_since(oid=oid, start_vts=tx.start_vts):
+                    return {
+                        "ok": False,
+                        "type": MessageTypes.TX_COMMIT_ABORT,
+                        "reason": f"write_conflict_on={oid}",
+                    }
+
+            commit_version = self.clock.next_version()
+            replicated_writes: List[Dict[str, Any]] = []
+            for op in tx.updates:
+                if op.op_type == "WRITE":
+                    self.store.put(oid=op.oid, value=op.payload, version=commit_version)
+                    replicated_writes.append({"op_type": "WRITE", "oid": op.oid, "value": op.payload})
+
+            payload = {
+                "type": MessageTypes.TX_PROPAGATE,
+                "origin_site": self.site_id,
+                "origin_seq_no": commit_version.seq_no,
+                "start_vts": tx.start_vts.to_dict(),
+                "writes": replicated_writes,
+            }
+
+        wait_info = self._wait_disaster_safe_acks(payload=payload)
+
+        return {
+            "ok": True,
+            "type": MessageTypes.TX_COMMIT_OK,
+            "commit_mode": "FAST",
+            "write_count": len(objects),
+            "commit_version": commit_version.to_dict(),
+            **wait_info,
+        }
 
     def _prepare_local_writes(self, txid: str, start_vts: Dict[int, int], writes: List[Dict[str, Any]]) -> tuple[bool, str]:
         if not writes:
@@ -583,6 +832,21 @@ class WalterSiteRuntime:
                     return {"ok": False, "error": "write object must include value"}
             return self._handle_bench_fast_tx(mode=mode, objects=objects)
 
+        if msg_type == MessageTypes.TX_BENCH_FAST_DURABILITY_TX:
+            objects = request.get("objects")
+            if not isinstance(objects, list):
+                return {"ok": False, "error": "objects must be list"}
+            if not objects:
+                return {"ok": False, "error": "objects cannot be empty"}
+            for obj in objects:
+                if not isinstance(obj, dict):
+                    return {"ok": False, "error": "object item must be dict"}
+                if not isinstance(obj.get("oid"), str):
+                    return {"ok": False, "error": "object oid must be str"}
+                if "value" not in obj:
+                    return {"ok": False, "error": "write object must include value"}
+            return self._handle_bench_fast_durability_tx(objects=objects)
+
         if msg_type == MessageTypes.TX_WRITE:
             tid = request.get("tid")
             oid = request.get("oid")
@@ -729,6 +993,71 @@ class WalterSiteRuntime:
                     "origin_seq_no": origin_seq_no,
                     "pending": len(self.pending_propagations),
                 }
+
+        if msg_type == MessageTypes.TX_PROPAGATE_BATCH:
+            entries = request.get("entries")
+            if not isinstance(entries, list):
+                return {"ok": False, "error": "entries must be list"}
+
+            results: List[Dict[str, Any]] = []
+            with self._state_lock:
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        results.append({"ok": False, "error": "entry must be dict"})
+                        continue
+
+                    origin_site = entry.get("origin_site")
+                    origin_seq_no = entry.get("origin_seq_no")
+                    writes = entry.get("writes")
+                    start_vts = entry.get("start_vts")
+                    if not isinstance(origin_site, int):
+                        results.append({"ok": False, "error": "origin_site must be int"})
+                        continue
+                    if not isinstance(origin_seq_no, int):
+                        results.append({"ok": False, "error": "origin_seq_no must be int"})
+                        continue
+                    if not isinstance(writes, list):
+                        results.append({"ok": False, "error": "writes must be list"})
+                        continue
+                    if not isinstance(start_vts, dict):
+                        results.append({"ok": False, "error": "start_vts must be dict"})
+                        continue
+
+                    payload = {
+                        "origin_site": origin_site,
+                        "origin_seq_no": origin_seq_no,
+                        "writes": writes,
+                        "start_vts": start_vts,
+                    }
+
+                    if self._try_apply_propagation(payload):
+                        results.append(
+                            {
+                                "ok": True,
+                                "type": MessageTypes.TX_PROPAGATE_APPLIED,
+                                "origin_site": origin_site,
+                                "origin_seq_no": origin_seq_no,
+                            }
+                        )
+                    else:
+                        self.pending_propagations.append(payload)
+                        results.append(
+                            {
+                                "ok": True,
+                                "type": MessageTypes.TX_PROPAGATE_QUEUED,
+                                "origin_site": origin_site,
+                                "origin_seq_no": origin_seq_no,
+                                "pending": len(self.pending_propagations),
+                            }
+                        )
+
+                self._drain_pending_propagations()
+
+            return {
+                "ok": True,
+                "type": MessageTypes.TX_PROPAGATE_BATCH_ACK,
+                "results": results,
+            }
 
         if msg_type == MessageTypes.TX_READ:
             tid = request.get("tid")
