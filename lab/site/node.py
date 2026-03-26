@@ -99,7 +99,6 @@ class WalterSiteRuntime:
                     if item is None:
                         return
                     batch_items.append(item)
-            print("!!!", len(batch_items))
             self._flush_propagation_batch(batch_items)
 
     def _enqueue_propagation(self, payload: Dict[str, Any], token: Optional[int] = None) -> None:
@@ -411,6 +410,74 @@ class WalterSiteRuntime:
             "write_count": len(objects),
             "commit_version": commit_version.to_dict(),
             **wait_info,
+        }
+
+    def _handle_bench_slow_durability_tx(self, objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Benchmark-only path: slow 2PC commit latency + post-commit disaster-safe wait.
+
+        This uses the same simplified durability semantics as fast benchmark:
+        disaster-safe wait is measured on the coordinator's propagation stream.
+        """
+
+        with self._state_lock:
+            tid = self._allocate_tid_locked()
+            tx = Transaction(tid=tid, start_vts=self.clock.current_snapshot())
+            for item in objects:
+                oid = str(item["oid"])
+                payload = item.get("value")
+                tx.add_write(oid=oid, payload=payload)
+
+        write_oids = {op.oid for op in tx.updates if op.op_type == "WRITE"}
+        touched_sites = {get_preferred_site(oid, default_site_id=self.site_id) for oid in write_oids}
+        if len(touched_sites) <= 1:
+            return {
+                "ok": False,
+                "type": MessageTypes.TX_COMMIT_ABORT,
+                "reason": "not_slow_writeset",
+            }
+
+        commit_started = time.perf_counter()
+        commit_resp = self._commit_slow_2pc(tx)
+        commit_ms = (time.perf_counter() - commit_started) * 1000.0
+
+        if not commit_resp.get("ok"):
+            return {
+                **commit_resp,
+                "commit_ms": commit_ms,
+                "ds_wait_ms": float("inf"),
+                "ds_durable_ms": float("inf"),
+            }
+
+        local_commit = commit_resp.get("local_commit")
+        if not isinstance(local_commit, dict):
+            return {
+                **commit_resp,
+                "commit_ms": commit_ms,
+                "ds_wait_ms": float("inf"),
+                "ds_durable_ms": float("inf"),
+            }
+
+        writes = local_commit.get("writes", [])
+        start_vts = local_commit.get("start_vts", {})
+        seq_no = int(local_commit.get("seq_no", 0))
+        payload = {
+            "type": MessageTypes.TX_PROPAGATE,
+            "origin_site": self.site_id,
+            "origin_seq_no": seq_no,
+            "start_vts": dict(start_vts),
+            "writes": list(writes),
+        }
+        wait_info = self._wait_disaster_safe_acks(payload=payload)
+        ds_wait_ms = float(wait_info.get("disaster_safe_ms", float("inf")))
+        ds_durable_ms = commit_ms + ds_wait_ms if ds_wait_ms != float("inf") else float("inf")
+
+        return {
+            **commit_resp,
+            "commit_ms": commit_ms,
+            "ds_wait_ms": ds_wait_ms,
+            "ds_durable_ms": ds_durable_ms,
+            "required_remote_acks": wait_info.get("required_remote_acks", 0),
+            "received_remote_acks": wait_info.get("received_remote_acks", 0),
         }
 
     def _prepare_local_writes(self, txid: str, start_vts: Dict[int, int], writes: List[Dict[str, Any]]) -> tuple[bool, str]:
@@ -846,6 +913,21 @@ class WalterSiteRuntime:
                 if "value" not in obj:
                     return {"ok": False, "error": "write object must include value"}
             return self._handle_bench_fast_durability_tx(objects=objects)
+
+        if msg_type == MessageTypes.TX_BENCH_SLOW_DURABILITY_TX:
+            objects = request.get("objects")
+            if not isinstance(objects, list):
+                return {"ok": False, "error": "objects must be list"}
+            if not objects:
+                return {"ok": False, "error": "objects cannot be empty"}
+            for obj in objects:
+                if not isinstance(obj, dict):
+                    return {"ok": False, "error": "object item must be dict"}
+                if not isinstance(obj.get("oid"), str):
+                    return {"ok": False, "error": "object oid must be str"}
+                if "value" not in obj:
+                    return {"ok": False, "error": "write object must include value"}
+            return self._handle_bench_slow_durability_tx(objects=objects)
 
         if msg_type == MessageTypes.TX_WRITE:
             tid = request.get("tid")

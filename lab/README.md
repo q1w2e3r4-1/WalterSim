@@ -145,3 +145,24 @@ WalterSim/lab/experiments/results/csv/disaster_safe_fast_commit_samples.csv
 WalterSim/lab/experiments/results/csv/disaster_safe_fast_commit_summary.csv
 WalterSim/lab/experiments/results/png/disaster_safe_fast_commit_cdf.png
 ```
+
+5. Slow Commit latency + DS-durable latency (4 sites, write-only, write_sz=2..4):
+
+```bash
+python WalterSim/lab/scripts/run_slow_commit_latency_experiment.py \
+  --tx-per-size 1000 \
+  --warmup 200 \
+  --concurrency 16 \
+  --submit-interval-ms 80 \
+  --propagate-batch-interval-ms 200 \
+  --propagate-batch-max-txs 8 \
+  --keys-per-site 100000
+```
+
+Outputs:
+
+```text
+WalterSim/lab/experiments/results/csv/slow_commit_latency_samples.csv
+WalterSim/lab/experiments/results/csv/slow_commit_latency_summary.csv
+WalterSim/lab/experiments/results/png/slow_commit_all_cdf.png
+```
