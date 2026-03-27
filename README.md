@@ -49,3 +49,8 @@ Open `.html` file from `frontend` folder in the web browser.
         3. eve 在 s01 站点发布说说 T7；
         4. T1 异步复制到 s01 后，eve 再次读取，能看到 T1，但 T7 的提交顺序在 T1 之前（长分叉）；
         5. 所有用户最终按物理时间戳排序，看到 T1 在前、T7 在后。
+
+python3 -m http.server 8080
+
+#### 实验复现部分
+在lab文件夹，详见其内部的README.md

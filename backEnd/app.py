@@ -1,6 +1,7 @@
 # backend interface to communicate with the frontend
 import threading
-from .walter.server import Server
+import time
+from .walter.server import PROPAGATE_DELAY, Server
 from flask import Flask, request
 
 
@@ -89,12 +90,14 @@ class Backend:
                     print("│   × 条件1不满足", x['startVTS'], db_server.gotVTS)
                     print("│<= {\"status\":\"ERROR\"}")
                     print("╰──────────────────────────────────────────────────────────────────────────╯")
+                    time.sleep(PROPAGATE_DELAY)
                     return {"status": "ERROR"}, 200
 
             if db_server.gotVTS[j] != x['seqno'] - 1:
                 print("│   × 条件2不满足", x['startVTS'], db_server.gotVTS)
                 print("│<= {\"status\":\"ERROR\"}")
                 print("╰──────────────────────────────────────────────────────────────────────────╯")
+                time.sleep(PROPAGATE_DELAY)
                 return {"status": "ERROR"}, 200
 
             db_server.update(x['updates'], (j, x['seqno']))
@@ -104,6 +107,7 @@ class Backend:
             print("│         ♢History: ", db_server.history)
             print("│<= {\"status\":\"OK\"}")
             print("╰──────────────────────────────────────────────────────────────────────────╯")
+            time.sleep(PROPAGATE_DELAY)
             return {"status": "OK", "tid": x['tid']}, 200
 
         # ds_durable 接收接口
@@ -144,6 +148,7 @@ class Backend:
         # 慢投票接口
         @app.route("/prepare", methods=['POST'])
         def do_prepare():
+            time.sleep(PROPAGATE_DELAY)
             data     = request.get_json()
             tid      = data['tid']
             oids     = data['oids']
